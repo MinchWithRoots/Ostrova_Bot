@@ -60,7 +60,7 @@ def get_keyboard(name):
 
     return kb
 
-@app.route('/callback', methods=['POST'])
+@app.route('/callback', methods=['POST', 'GET'])
 def callback():
     data = json.loads(request.data)
 

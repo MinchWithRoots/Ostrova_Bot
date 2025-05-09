@@ -64,6 +64,9 @@ def get_keyboard(name):
 def callback():
     data = json.loads(request.data)
 
+    if request.method == 'GET':
+    return 'I am alive!', 200
+
     if 'type' not in data:
         return 'not vk'
 

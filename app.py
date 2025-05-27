@@ -13,6 +13,14 @@ token = 'vk1.a.69EGRWB1sbkT5O5nNF5WLcI9rsjx9_gDHPEcWWAQvL26fMZVkzKmoHM4fBNQMGjLh
 vk_session = vk_api.VkApi(token=token)
 vk = vk_session.get_api()
 
+from datetime import datetime
+
+# Глобальные словари для хранения данных пользователей и состояний
+user_state = {}
+user_data = {}
+user_registrations = {}
+
+
 def get_keyboard(name, user_id=None):
     kb = VkKeyboard(one_time=False)
 
@@ -301,4 +309,9 @@ def send_message(user_id, message, keyboard=None):
         keyboard=keyboard.get_keyboard() if keyboard else None
     )
 
+import subprocess
 
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    subprocess.call(['./update.sh'])
+    return 'OK', 200

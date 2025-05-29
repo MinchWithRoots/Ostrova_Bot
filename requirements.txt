@@ -1,3 +1,7 @@
 flask
 gunicorn
 vk_api
+gspread
+google-auth
+google-auth-oautholib
+google-auth-httplib2

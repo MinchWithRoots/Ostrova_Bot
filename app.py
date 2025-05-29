@@ -1,12 +1,13 @@
 import vk_api
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
-from flask import Flask, request, json
+from flask import Flask, request, jsonify
 import random
 from datetime import datetime
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2 import service_account
 import time
 import logging
+import os
 
 # Настройка логирования
 logging.basicConfig(
@@ -20,7 +21,7 @@ app = Flask(__name__)
 # Конфигурация
 VK_TOKEN = 'vk1.a.69EGRWB1sbkT5O5nNF5WLcI9rsjx9_gDHPEcWWAQvL26fMZVkzKmoHM4fBNQMGjLhkQDAD-0NU16OALmxM_HmsyF0gDykLWuIjU1YV5ZlyWqQZD_r_8qTKp8NYsH8-04_9d9q1UA6IvBbj4_qd8a5o_F4Fr75eSGKWyw0x1kt1XfhW_W3GEaEC_u2Nt2lcH7kv7qo8wdQatf6BzohS5asA'
 CONFIRMATION_TOKEN = 'c9d9ac77'
-SPREADSHEET_ID = '1bTxkAEKumsd1Cxnue0uxLzAWiEBe8OdAiKVio3LlFmg'
+SPREADSHEET_ID = '1bTxkAEKumsd1Cxnue0uxLzAWiEBe8OdAiKVio3LlFg'  # Убедитесь, что это правильный ID вашей таблицы
 
 # Инициализация VK API
 vk_session = vk_api.VkApi(token=VK_TOKEN)
@@ -31,8 +32,12 @@ user_state = {}
 user_data_cache = {}
 
 # Настройки Google Sheets
-SCOPES = ['https://spreadsheets.google.com/feeds', 
-          'https://www.googleapis.com/auth/drive']
+SCOPES = [
+    'https://spreadsheets.google.com/feeds', 
+    'https://www.googleapis.com/auth/spreadsheets', 
+    'https://www.googleapis.com/auth/drive' 
+]
+
 SHEET_NAMES = {
     'users': 'Users',
     'clubs': 'Clubs',
@@ -51,9 +56,11 @@ class GoogleSheetsManager:
     def connect(self, retries=3, delay=5):
         for attempt in range(retries):
             try:
-                creds = ServiceAccountCredentials.from_json_keyfile_name(
-                    'credentials.json', SCOPES)
-                client = gspread.authorize(creds)
+                # Используем обновленный способ авторизации с google-auth
+                credentials = service_account.Credentials.from_service_account_file(
+                    'credentials.json', scopes=SCOPES)
+                
+                client = gspread.authorize(credentials)
                 sheet = client.open_by_key(SPREADSHEET_ID)
                 
                 # Загружаем все листы
@@ -68,12 +75,10 @@ class GoogleSheetsManager:
                 self.connected = True
                 logger.info("Успешное подключение к Google Sheets")
                 return True
-                
             except Exception as e:
                 logger.error(f"Ошибка подключения к Google Sheets (попытка {attempt + 1}): {e}")
                 if attempt < retries - 1:
                     time.sleep(delay)
-        
         self.connected = False
         return False
     
@@ -81,7 +86,6 @@ class GoogleSheetsManager:
         if not self.connected:
             if not self.connect():
                 raise Exception("Не удалось подключиться к Google Sheets")
-        
         return self.sheets.get(sheet_name)
 
 # Инициализация менеджера Google Sheets
@@ -89,17 +93,14 @@ sheets_manager = GoogleSheetsManager()
 
 def get_keyboard(name, user_id=None):
     kb = VkKeyboard(one_time=False)
-
     if name == "null":
         kb.add_button('На главную', color=VkKeyboardColor.PRIMARY)
-
     elif name == "main":
         kb.add_button('Личный кабинет')
         kb.add_line()
         kb.add_button('Кружки и Мероприятия')
         kb.add_line()
         kb.add_button('Вопросы')
-
     elif name == "personal_account":
         if is_user_registered(user_id):
             kb.add_button('Информация')
@@ -111,7 +112,6 @@ def get_keyboard(name, user_id=None):
             kb.add_button('Зарегистрироваться')
             kb.add_line()
             kb.add_button('На главную', color=VkKeyboardColor.PRIMARY)
-
     elif name == "edit_info":
         kb.add_button('Имя и Фамилия')
         kb.add_line()
@@ -120,24 +120,20 @@ def get_keyboard(name, user_id=None):
         kb.add_button('Номер телефона')
         kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
-
     elif name == "get_name":
         kb.add_button('Взять с профиля', color=VkKeyboardColor.POSITIVE)
         kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
-
     elif name == "get_birthdate":
         kb.add_button('Взять с профиля', color=VkKeyboardColor.POSITIVE)
         kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
-
     elif name == "activities":
         kb.add_button('Кружок')
         kb.add_line()
         kb.add_button('Мероприятие')
         kb.add_line()
         kb.add_button('На главную', color=VkKeyboardColor.PRIMARY)
-
     elif name == "clubs":
         clubs = get_active_clubs()
         for i, club in enumerate(clubs):
@@ -146,7 +142,6 @@ def get_keyboard(name, user_id=None):
             kb.add_button(club['name'])
         kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
-
     elif name == "club_dates":
         club_id = user_state[user_id]['club_id']
         dates = get_club_dates(club_id)
@@ -156,41 +151,35 @@ def get_keyboard(name, user_id=None):
             kb.add_button(date['display'])
         kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
-
     elif name == "club_times":
         schedule_id = user_state[user_id]['schedule_id']
         times = get_schedule_times(schedule_id)
-        for time in times:
-            kb.add_button(time)
+        for time_str in times:
+            kb.add_button(time_str)
             kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
-
     elif name == "confirm_registration":
         kb.add_button('Подтверждаю', color=VkKeyboardColor.POSITIVE)
         kb.add_line()
         kb.add_button('Не подтверждаю', color=VkKeyboardColor.NEGATIVE)
-
     elif name == "events":
         events = get_active_events()
         for event in events:
             kb.add_button(event['name'])
             kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
-
     elif name == "questions":
         kb.add_button('Часто задаваемые вопросы')
         kb.add_line()
         kb.add_button('Свой вопрос')
         kb.add_line()
         kb.add_button('На главную', color=VkKeyboardColor.PRIMARY)
-
     elif name == "faq":
         categories = get_faq_categories()
         for category in categories:
             kb.add_button(category)
             kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
-
     return kb
 
 # Функции для работы с Google Sheets
@@ -234,7 +223,6 @@ def get_club_dates(club_id):
         schedule_sheet = sheets_manager.get_sheet('schedule')
         schedules = schedule_sheet.get_all_records()
         club_schedules = [s for s in schedules if str(s.get('club_id')) == str(club_id)]
-        
         dates = []
         for s in club_schedules:
             try:
@@ -297,7 +285,6 @@ def register_for_club(user_id, club_id, schedule_id):
     try:
         registrations_sheet = sheets_manager.get_sheet('registrations')
         schedule_sheet = sheets_manager.get_sheet('schedule')
-        
         reg_date = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
         reg_time = datetime.now().strftime('%H:%M:%S')
         
@@ -314,12 +301,11 @@ def register_for_club(user_id, club_id, schedule_id):
         
         # Обновляем количество участников
         schedules = schedule_sheet.get_all_records()
-        for i, s in enumerate(schedules, start=2):
+        for i, s in enumerate(schedules, start=2):  # start=2 потому что индексация в Google Sheets начинается с 1, а первая строка - заголовки
             if str(s.get('club_id')) == str(schedule_id):
                 current = int(s.get('current_participants', 0)) if s.get('current_participants') else 0
                 schedule_sheet.update_cell(i, 8, current + 1)
                 break
-        
         return True
     except Exception as e:
         logger.error(f"Ошибка при регистрации на кружок: {e}")
@@ -329,7 +315,6 @@ def register_for_event(user_id, event_id):
     try:
         registrations_sheet = sheets_manager.get_sheet('registrations')
         events_sheet = sheets_manager.get_sheet('events')
-        
         reg_date = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
         reg_time = datetime.now().strftime('%H:%M:%S')
         
@@ -345,12 +330,11 @@ def register_for_event(user_id, event_id):
         
         # Обновляем количество участников мероприятия
         events = events_sheet.get_all_records()
-        for i, e in enumerate(events, start=2):
+        for i, e in enumerate(events, start=2):  # start=2 потому что индексация в Google Sheets начинается с 1, а первая строка - заголовки
             if str(e.get('event_id')) == str(event_id):
                 current = int(e.get('current_participants', 0)) if e.get('current_participants') else 0
                 events_sheet.update_cell(i, 9, current + 1)
                 break
-        
         return True
     except Exception as e:
         logger.error(f"Ошибка при регистрации на мероприятие: {e}")
@@ -361,7 +345,6 @@ def get_user_registrations(user_id):
         registrations_sheet = sheets_manager.get_sheet('registrations')
         clubs_sheet = sheets_manager.get_sheet('clubs')
         events_sheet = sheets_manager.get_sheet('events')
-        
         registrations = registrations_sheet.get_all_records()
         user_regs = [
             r for r in registrations 
@@ -371,7 +354,6 @@ def get_user_registrations(user_id):
         
         club_regs = []
         event_regs = []
-        
         for reg in user_regs:
             if reg.get('type') == 'club':
                 club = next(
@@ -381,7 +363,6 @@ def get_user_registrations(user_id):
                 )
                 if club:
                     club_regs.append(club.get('name', 'Неизвестный кружок'))
-            
             elif reg.get('type') == 'event':
                 event = next(
                     (e for e in events_sheet.get_all_records() 
@@ -393,7 +374,6 @@ def get_user_registrations(user_id):
                         f"{event.get('name', 'Неизвестное мероприятие')} "
                         f"({event.get('date', 'без даты')})"
                     )
-        
         return {
             'clubs': ', '.join(club_regs) if club_regs else 'Нет записей',
             'events': ', '.join(event_regs) if event_regs else 'Нет записей'
@@ -408,18 +388,16 @@ def get_user_registrations(user_id):
 @app.route('/callback', methods=['POST'])
 def callback():
     try:
-        data = json.loads(request.data)
-
+        data = request.get_json()
         if 'type' not in data:
             return 'not vk', 200
-
+        
         if data['type'] == 'confirmation':
             return CONFIRMATION_TOKEN, 200
-
+        
         if data['type'] == 'message_new':
             message = data['object']['message']['text']
             user_id = data['object']['message']['from_id']
-            
             logger.info(f"Получено сообщение от {user_id}: {message}")
             
             # Обработка состояний пользователя
@@ -491,7 +469,6 @@ def callback():
                     club_id = user_state[user_id]['club_id']
                     dates = get_club_dates(club_id)
                     selected_date = next((d for d in dates if d['display'] == message), None)
-                    
                     if selected_date:
                         user_state[user_id] = {
                             'state': 'waiting_for_club_time',
@@ -513,7 +490,6 @@ def callback():
                 elif state == 'waiting_for_club_time':
                     schedule_id = user_state[user_id]['schedule_id']
                     times = get_schedule_times(schedule_id)
-                    
                     if message in times:
                         if register_for_club(user_id, user_state[user_id]['club_id'], schedule_id):
                             clubs = get_active_clubs()
@@ -580,7 +556,7 @@ def callback():
                         send_message(user_id, "Запись отменена", get_keyboard("main"))
                     del user_state[user_id]
                     return 'ok', 200
-
+            
             # Обработка основных команд
             if message == "Начать":
                 send_message(
@@ -686,7 +662,6 @@ def callback():
                              if str(u.get('user_id')) == str(user_id)), 
                             None
                         )
-                        
                         if user:
                             response = (
                                 f"Ваши данные:\n"
@@ -800,7 +775,7 @@ def callback():
                         f"Дата: {event.get('date', 'не указана')}\n"
                         f"Время: {event.get('time', 'не указано')}\n"
                         f"Место: {event.get('location', 'не указано')}\n"
-                        f"Описание: {event.get('description', 'отсутствует')}\n\n"
+                        f"Описание: {event.get('description', 'отсутствует')}\n"
                         f"Подтвердите запись:"
                     )
                     send_message(
@@ -828,10 +803,10 @@ def callback():
             
             elif message in get_faq_categories():
                 faqs = get_faq_by_category(message)
-                response = "Часто задаваемые вопросы:\n\n"
+                response = "Часто задаваемые вопросы:\n"
                 for faq in faqs:
                     response += f"Q: {faq.get('question', 'Вопрос отсутствует')}\n"
-                    response += f"A: {faq.get('answer', 'Ответ отсутствует')}\n\n"
+                    response += f"A: {faq.get('answer', 'Ответ отсутствует')}\n"
                 send_message(
                     user_id, 
                     response.strip(), 
@@ -855,9 +830,8 @@ def callback():
                     get_keyboard("main")
                 )
                 return 'ok', 200
-
+            
             return 'ok', 200
-
     except Exception as e:
         logger.error(f"Ошибка в обработке запроса: {e}")
         return 'error', 500

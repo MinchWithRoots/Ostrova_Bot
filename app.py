@@ -3,11 +3,15 @@ from vk_api.keyboard import VkKeyboard, VkKeyboardColor
 from flask import Flask, request, jsonify
 import random
 from datetime import datetime
-import gspread
-from google.oauth2 import service_account
 import time
 import logging
 import os
+import pymysql
+from pymysql.cursors import DictCursor
+from dotenv import load_dotenv
+
+# Загрузка переменных окружения
+load_dotenv()
 
 # Настройка логирования
 logging.basicConfig(
@@ -18,10 +22,13 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Конфигурация
-VK_TOKEN = 'vk1.a.69EGRWB1sbkT5O5nNF5WLcI9rsjx9_gDHPEcWWAQvL26fMZVkzKmoHM4fBNQMGjLhkQDAD-0NU16OALmxM_HmsyF0gDykLWuIjU1YV5ZlyWqQZD_r_8qTKp8NYsH8-04_9d9q1UA6IvBbj4_qd8a5o_F4Fr75eSGKWyw0x1kt1XfhW_W3GEaEC_u2Nt2lcH7kv7qo8wdQatf6BzohS5asA'
-CONFIRMATION_TOKEN = 'c9d9ac77'
-SPREADSHEET_ID = '1bTxkAEKumsd1Cxnue0uxLzAWiEBe8OdAiKVio3LlFg'  # Убедитесь, что это правильный ID вашей таблицы
+# Конфигурация из переменных окружения
+VK_TOKEN = os.getenv('VK_TOKEN')
+CONFIRMATION_TOKEN = os.getenv('CONFIRMATION_TOKEN')
+DB_HOST = os.getenv('DB_HOST')
+DB_USER = os.getenv('DB_USER')
+DB_PASSWORD = os.getenv('DB_PASSWORD')
+DB_NAME = os.getenv('DB_NAME')
 
 # Инициализация VK API
 vk_session = vk_api.VkApi(token=VK_TOKEN)
@@ -31,65 +38,51 @@ vk = vk_session.get_api()
 user_state = {}
 user_data_cache = {}
 
-# Настройки Google Sheets
-SCOPES = [
-    'https://spreadsheets.google.com/feeds', 
-    'https://www.googleapis.com/auth/spreadsheets', 
-    'https://www.googleapis.com/auth/drive' 
-]
-
-SHEET_NAMES = {
-    'users': 'Users',
-    'clubs': 'Clubs',
-    'schedule': 'Club_Schedule',
-    'events': 'Events',
-    'registrations': 'Registrations',
-    'faq': 'FAQ'
-}
-
-class GoogleSheetsManager:
+class DatabaseManager:
     def __init__(self):
-        self.connected = False
-        self.sheets = {}
+        self.connection = None
         self.connect()
     
     def connect(self, retries=3, delay=5):
         for attempt in range(retries):
             try:
-                # Используем обновленный способ авторизации с google-auth
-                credentials = service_account.Credentials.from_service_account_file(
-                    'credentials.json', scopes=SCOPES)
-                
-                client = gspread.authorize(credentials)
-                sheet = client.open_by_key(SPREADSHEET_ID)
-                
-                # Загружаем все листы
-                self.sheets = {
-                    'users': sheet.worksheet(SHEET_NAMES['users']),
-                    'clubs': sheet.worksheet(SHEET_NAMES['clubs']),
-                    'schedule': sheet.worksheet(SHEET_NAMES['schedule']),
-                    'events': sheet.worksheet(SHEET_NAMES['events']),
-                    'registrations': sheet.worksheet(SHEET_NAMES['registrations']),
-                    'faq': sheet.worksheet(SHEET_NAMES['faq'])
-                }
-                self.connected = True
-                logger.info("Успешное подключение к Google Sheets")
+                self.connection = pymysql.connect(
+                    host=DB_HOST,
+                    user=DB_USER,
+                    password=DB_PASSWORD,
+                    database=DB_NAME,
+                    cursorclass=DictCursor
+                )
+                logger.info("Успешное подключение к базе данных")
                 return True
             except Exception as e:
-                logger.error(f"Ошибка подключения к Google Sheets (попытка {attempt + 1}): {e}")
+                logger.error(f"Ошибка подключения к базе данных (попытка {attempt + 1}): {e}")
                 if attempt < retries - 1:
                     time.sleep(delay)
-        self.connected = False
         return False
     
-    def get_sheet(self, sheet_name):
-        if not self.connected:
-            if not self.connect():
-                raise Exception("Не удалось подключиться к Google Sheets")
-        return self.sheets.get(sheet_name)
+    def execute_query(self, query, params=None, fetch_one=False, fetch_all=False, commit=False):
+        try:
+            with self.connection.cursor() as cursor:
+                cursor.execute(query, params or ())
+                if commit:
+                    self.connection.commit()
+                if fetch_one:
+                    return cursor.fetchone()
+                if fetch_all:
+                    return cursor.fetchall()
+                return None
+        except Exception as e:
+            logger.error(f"Ошибка выполнения запроса: {e}")
+            self.connection.rollback()
+            raise
+    
+    def close(self):
+        if self.connection:
+            self.connection.close()
 
-# Инициализация менеджера Google Sheets
-sheets_manager = GoogleSheetsManager()
+# Инициализация менеджера базы данных
+db_manager = DatabaseManager()
 
 def get_keyboard(name, user_id=None):
     kb = VkKeyboard(one_time=False)
@@ -182,28 +175,23 @@ def get_keyboard(name, user_id=None):
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
     return kb
 
-# Функции для работы с Google Sheets
+# Функции для работы с базой данных
 def is_user_registered(user_id):
     try:
-        users_sheet = sheets_manager.get_sheet('users')
-        users = users_sheet.get_all_records()
-        return any(str(user['user_id']) == str(user_id) for user in users)
+        query = "SELECT 1 FROM Users WHERE user_id = %s"
+        result = db_manager.execute_query(query, (user_id,), fetch_one=True)
+        return result is not None
     except Exception as e:
         logger.error(f"Ошибка при проверке регистрации пользователя: {e}")
         return False
 
 def register_user(user_id, first_name, last_name, birthdate, phone):
     try:
-        users_sheet = sheets_manager.get_sheet('users')
-        reg_date = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
-        users_sheet.append_row([
-            str(user_id), 
-            first_name, 
-            last_name, 
-            birthdate, 
-            phone, 
-            reg_date
-        ])
+        query = """
+        INSERT INTO Users (user_id, first_name, last_name, birthdate, phone, reg_date)
+        VALUES (%s, %s, %s, %s, %s, CURDATE())
+        """
+        db_manager.execute_query(query, (user_id, first_name, last_name, birthdate, phone), commit=True)
         return True
     except Exception as e:
         logger.error(f"Ошибка при регистрации пользователя: {e}")
@@ -211,29 +199,34 @@ def register_user(user_id, first_name, last_name, birthdate, phone):
 
 def get_active_clubs():
     try:
-        clubs_sheet = sheets_manager.get_sheet('clubs')
-        clubs = clubs_sheet.get_all_records()
-        return [club for club in clubs if club.get('active', '').upper() == 'TRUE']
+        query = "SELECT * FROM Clubs WHERE active = TRUE"
+        return db_manager.execute_query(query, fetch_all=True) or []
     except Exception as e:
         logger.error(f"Ошибка при получении активных кружков: {e}")
         return []
 
 def get_club_dates(club_id):
     try:
-        schedule_sheet = sheets_manager.get_sheet('schedule')
-        schedules = schedule_sheet.get_all_records()
-        club_schedules = [s for s in schedules if str(s.get('club_id')) == str(club_id)]
+        query = """
+        SELECT 
+            schedule_id, 
+            date, 
+            DAYNAME(date) as day_of_week, 
+            start_time, 
+            end_time 
+        FROM Club_Schedule 
+        WHERE club_id = %s AND date >= CURDATE()
+        ORDER BY date
+        """
+        schedules = db_manager.execute_query(query, (club_id,), fetch_all=True) or []
         dates = []
-        for s in club_schedules:
-            try:
-                date_obj = datetime.strptime(s['date'], '%d.%m.%Y')
-                dates.append({
-                    'date': s['date'],
-                    'display': f"{s['date']} ({s.get('day_of_week', '')})",
-                    'schedule_id': s.get('club_id')
-                })
-            except ValueError:
-                continue
+        for s in schedules:
+            date_str = s['date'].strftime('%d.%m.%Y')
+            dates.append({
+                'date': date_str,
+                'display': f"{date_str} ({s['day_of_week']})",
+                'schedule_id': s['schedule_id']
+            })
         return dates
     except Exception as e:
         logger.error(f"Ошибка при получении дат кружка: {e}")
@@ -241,14 +234,16 @@ def get_club_dates(club_id):
 
 def get_schedule_times(schedule_id):
     try:
-        schedule_sheet = sheets_manager.get_sheet('schedule')
-        schedules = schedule_sheet.get_all_records()
-        schedule = next(
-            (s for s in schedules if str(s.get('club_id')) == str(schedule_id)), 
-            None
-        )
+        query = """
+        SELECT 
+            TIME_FORMAT(start_time, '%H:%i') as start_time,
+            TIME_FORMAT(end_time, '%H:%i') as end_time
+        FROM Club_Schedule
+        WHERE schedule_id = %s
+        """
+        schedule = db_manager.execute_query(query, (schedule_id,), fetch_one=True)
         if schedule:
-            return [f"{schedule.get('start_time', '')}-{schedule.get('end_time', '')}"]
+            return [f"{schedule['start_time']}-{schedule['end_time']}"]
         return []
     except Exception as e:
         logger.error(f"Ошибка при получении времени занятий: {e}")
@@ -256,56 +251,56 @@ def get_schedule_times(schedule_id):
 
 def get_active_events():
     try:
-        events_sheet = sheets_manager.get_sheet('events')
-        events = events_sheet.get_all_records()
-        return [event for event in events if event.get('active', '').upper() == 'TRUE']
+        query = "SELECT * FROM Events WHERE active = TRUE AND date >= CURDATE()"
+        return db_manager.execute_query(query, fetch_all=True) or []
     except Exception as e:
         logger.error(f"Ошибка при получении активных мероприятий: {e}")
         return []
 
 def get_faq_categories():
     try:
-        faq_sheet = sheets_manager.get_sheet('faq')
-        faqs = faq_sheet.get_all_records()
-        return list(set([faq.get('category', '') for faq in faqs if faq.get('category')]))
+        query = "SELECT DISTINCT category FROM FAQ"
+        faqs = db_manager.execute_query(query, fetch_all=True) or []
+        return [faq['category'] for faq in faqs if faq.get('category')]
     except Exception as e:
         logger.error(f"Ошибка при получении категорий FAQ: {e}")
         return []
 
 def get_faq_by_category(category):
     try:
-        faq_sheet = sheets_manager.get_sheet('faq')
-        faqs = faq_sheet.get_all_records()
-        return [faq for faq in faqs if faq.get('category') == category]
+        query = "SELECT question, answer FROM FAQ WHERE category = %s"
+        return db_manager.execute_query(query, (category,), fetch_all=True) or []
     except Exception as e:
         logger.error(f"Ошибка при получении FAQ по категории: {e}")
         return []
 
 def register_for_club(user_id, club_id, schedule_id):
     try:
-        registrations_sheet = sheets_manager.get_sheet('registrations')
-        schedule_sheet = sheets_manager.get_sheet('schedule')
-        reg_date = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
-        reg_time = datetime.now().strftime('%H:%M:%S')
+        # Проверяем, есть ли уже запись
+        check_query = """
+        SELECT 1 FROM Registrations 
+        WHERE user_id = %s AND type = 'club' AND item_id = %s AND status = 'active'
+        """
+        existing = db_manager.execute_query(check_query, (user_id, club_id), fetch_one=True)
+        if existing:
+            return False  # Уже записан
         
         # Добавляем запись о регистрации
-        registrations_sheet.append_row([
-            len(registrations_sheet.get_all_records()) + 1,
-            str(user_id),
-            'club',
-            str(club_id),
-            reg_date,
-            reg_time,
-            'active'
-        ])
+        reg_query = """
+        INSERT INTO Registrations 
+        (user_id, type, item_id, date, time, status) 
+        VALUES (%s, 'club', %s, CURDATE(), CURTIME(), 'active')
+        """
+        db_manager.execute_query(reg_query, (user_id, club_id), commit=True)
         
         # Обновляем количество участников
-        schedules = schedule_sheet.get_all_records()
-        for i, s in enumerate(schedules, start=2):  # start=2 потому что индексация в Google Sheets начинается с 1, а первая строка - заголовки
-            if str(s.get('club_id')) == str(schedule_id):
-                current = int(s.get('current_participants', 0)) if s.get('current_participants') else 0
-                schedule_sheet.update_cell(i, 8, current + 1)
-                break
+        update_query = """
+        UPDATE Club_Schedule 
+        SET current_participants = current_participants + 1 
+        WHERE schedule_id = %s
+        """
+        db_manager.execute_query(update_query, (schedule_id,), commit=True)
+        
         return True
     except Exception as e:
         logger.error(f"Ошибка при регистрации на кружок: {e}")
@@ -313,28 +308,31 @@ def register_for_club(user_id, club_id, schedule_id):
 
 def register_for_event(user_id, event_id):
     try:
-        registrations_sheet = sheets_manager.get_sheet('registrations')
-        events_sheet = sheets_manager.get_sheet('events')
-        reg_date = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
-        reg_time = datetime.now().strftime('%H:%M:%S')
+        # Проверяем, есть ли уже запись
+        check_query = """
+        SELECT 1 FROM Registrations 
+        WHERE user_id = %s AND type = 'event' AND item_id = %s AND status = 'active'
+        """
+        existing = db_manager.execute_query(check_query, (user_id, event_id), fetch_one=True)
+        if existing:
+            return False  # Уже записан
         
-        registrations_sheet.append_row([
-            len(registrations_sheet.get_all_records()) + 1,
-            str(user_id),
-            'event',
-            str(event_id),
-            reg_date,
-            reg_time,
-            'active'
-        ])
+        # Добавляем запись о регистрации
+        reg_query = """
+        INSERT INTO Registrations 
+        (user_id, type, item_id, date, time, status) 
+        VALUES (%s, 'event', %s, CURDATE(), CURTIME(), 'active')
+        """
+        db_manager.execute_query(reg_query, (user_id, event_id), commit=True)
         
         # Обновляем количество участников мероприятия
-        events = events_sheet.get_all_records()
-        for i, e in enumerate(events, start=2):  # start=2 потому что индексация в Google Sheets начинается с 1, а первая строка - заголовки
-            if str(e.get('event_id')) == str(event_id):
-                current = int(e.get('current_participants', 0)) if e.get('current_participants') else 0
-                events_sheet.update_cell(i, 9, current + 1)
-                break
+        update_query = """
+        UPDATE Events 
+        SET current_participants = current_participants + 1 
+        WHERE event_id = %s
+        """
+        db_manager.execute_query(update_query, (event_id,), commit=True)
+        
         return True
     except Exception as e:
         logger.error(f"Ошибка при регистрации на мероприятие: {e}")
@@ -342,41 +340,34 @@ def register_for_event(user_id, event_id):
 
 def get_user_registrations(user_id):
     try:
-        registrations_sheet = sheets_manager.get_sheet('registrations')
-        clubs_sheet = sheets_manager.get_sheet('clubs')
-        events_sheet = sheets_manager.get_sheet('events')
-        registrations = registrations_sheet.get_all_records()
-        user_regs = [
-            r for r in registrations 
-            if str(r.get('user_id')) == str(user_id) 
-            and r.get('status', '').lower() == 'active'
+        # Получаем записи на кружки
+        clubs_query = """
+        SELECT c.name 
+        FROM Registrations r
+        JOIN Clubs c ON r.item_id = c.club_id
+        WHERE r.user_id = %s AND r.type = 'club' AND r.status = 'active'
+        """
+        club_regs = db_manager.execute_query(clubs_query, (user_id,), fetch_all=True) or []
+        
+        # Получаем записи на мероприятия
+        events_query = """
+        SELECT e.name, e.date 
+        FROM Registrations r
+        JOIN Events e ON r.item_id = e.event_id
+        WHERE r.user_id = %s AND r.type = 'event' AND r.status = 'active'
+        """
+        event_regs = db_manager.execute_query(events_query, (user_id,), fetch_all=True) or []
+        
+        # Форматируем результаты
+        club_names = [reg['name'] for reg in club_regs]
+        event_names = [
+            f"{reg['name']} ({reg['date'].strftime('%d.%m.%Y')})"
+            for reg in event_regs
         ]
         
-        club_regs = []
-        event_regs = []
-        for reg in user_regs:
-            if reg.get('type') == 'club':
-                club = next(
-                    (c for c in clubs_sheet.get_all_records() 
-                     if str(c.get('club_id')) == str(reg.get('item_id'))),
-                    None
-                )
-                if club:
-                    club_regs.append(club.get('name', 'Неизвестный кружок'))
-            elif reg.get('type') == 'event':
-                event = next(
-                    (e for e in events_sheet.get_all_records() 
-                     if str(e.get('event_id')) == str(reg.get('item_id'))),
-                    None
-                )
-                if event:
-                    event_regs.append(
-                        f"{event.get('name', 'Неизвестное мероприятие')} "
-                        f"({event.get('date', 'без даты')})"
-                    )
         return {
-            'clubs': ', '.join(club_regs) if club_regs else 'Нет записей',
-            'events': ', '.join(event_regs) if event_regs else 'Нет записей'
+            'clubs': ', '.join(club_names) if club_names else 'Нет записей',
+            'events': ', '.join(event_names) if event_names else 'Нет записей'
         }
     except Exception as e:
         logger.error(f"Ошибка при получении регистраций пользователя: {e}")
@@ -655,19 +646,18 @@ def callback():
             elif message == "Информация":
                 if is_user_registered(user_id):
                     try:
-                        users_sheet = sheets_manager.get_sheet('users')
-                        users = users_sheet.get_all_records()
-                        user = next(
-                            (u for u in users 
-                             if str(u.get('user_id')) == str(user_id)), 
-                            None
-                        )
+                        query = """
+                        SELECT first_name, last_name, birthdate, phone 
+                        FROM Users 
+                        WHERE user_id = %s
+                        """
+                        user = db_manager.execute_query(query, (user_id,), fetch_one=True)
                         if user:
                             response = (
                                 f"Ваши данные:\n"
                                 f"Имя: {user.get('first_name', 'не указано')}\n"
                                 f"Фамилия: {user.get('last_name', 'не указана')}\n"
-                                f"Дата рождения: {user.get('birthdate', 'не указана')}\n"
+                                f"Дата рождения: {user['birthdate'].strftime('%d.%m.%Y') if user.get('birthdate') else 'не указана'}\n"
                                 f"Телефон: {user.get('phone', 'не указан')}"
                             )
                             send_message(
@@ -772,8 +762,8 @@ def callback():
                     }
                     response = (
                         f"{event['name']}\n"
-                        f"Дата: {event.get('date', 'не указана')}\n"
-                        f"Время: {event.get('time', 'не указано')}\n"
+                        f"Дата: {event['date'].strftime('%d.%m.%Y') if event.get('date') else 'не указана'}\n"
+                        f"Время: {event['time'].strftime('%H:%M') if event.get('time') else 'не указано'}\n"
                         f"Место: {event.get('location', 'не указано')}\n"
                         f"Описание: {event.get('description', 'отсутствует')}\n"
                         f"Подтвердите запись:"

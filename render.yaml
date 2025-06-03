@@ -2,8 +2,5 @@ services:
   - type: web
     name: vk-callback-server
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: ""
     startCommand: gunicorn app:app
-    envVars:
-      - key: DB_PASSWORD
-        value: ZVD-5rM-5Ru-UDW

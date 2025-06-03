@@ -24,9 +24,9 @@ CONFIRMATION_TOKEN = 'c9d9ac77'
 
 # Настройки базы данных
 DB_CONFIG = {
-    'host': 'mysql-alwaysdata-ostrova.alwaysdata.com',
+    'host': 'mysql-ostrova.alwaysdata.net',  # Убрал https://
     'user': 'ostrova',
-    'password': 'ostrova_base',
+    'password': 'ZVD-5rM-5Ru-UDW',
     'db': 'ostrova_base',
     'charset': 'utf8mb4',
     'cursorclass': cursors.DictCursor

@@ -1,6 +1,7 @@
 flask
 gunicorn
 vk_api
+pymysql
 gspread
 google-auth
 google-auth-oautholib

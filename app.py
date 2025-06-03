@@ -1,74 +1,72 @@
+from flask import Flask, request, jsonify
+import json
+import random
 import vk_api
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
-from flask import Flask, request, jsonify
-import random
-from datetime import datetime
-import time
-import logging
-import os
-import pymysql
-from pymysql import cursors
-
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+import mysql.connector
+from mysql.connector import Error
+from datetime import datetime, date, time
 
 app = Flask(__name__)
 
-# Конфигурация
-VK_TOKEN = 'vk1.a.69EGRWB1sbkT5O5nNF5WLcI9rsjx9_gDHPEcWWAQvL26fMZVkzKmoHM4fBNQMGjLhkQDAD-0NU16OALmxM_HmsyF0gDykLWuIjU1YV5ZlyWqQZD_r_8qTKp8NYsH8-04_9d9q1UA6IvBbj4_qd8a5o_F4Fr75eSGKWyw0x1kt1XfhW_W3GEaEC_u2Nt2lcH7kv7qo8wdQatf6BzohS5asA'
-CONFIRMATION_TOKEN = 'c9d9ac77'
+# Конфигурация VK API
+confirmation_token = 'c9d9ac77'
+token = 'vk1.a.69EGRWB1sbkT5O5nNF5WLcI9rsjx9_gDHPEcWWAQvL26fMZVkzKmoHM4fBNQMGjLhkQDAD-0NU16OALmxM_HmsyF0gDykLWuIjU1YV5ZlyWqQZD_r_8qTKp8NYsH8-04_9d9q1UA6IvBbj4_qd8a5o_F4Fr75eSGKWyw0x1kt1XfhW_W3GEaEC_u2Nt2lcH7kv7qo8wdQatf6BzohS5asA'
 
-# Настройки базы данных
-DB_CONFIG = {
-    'host': 'mysql-ostrova.alwaysdata.net',  # Убрал https://
+# Конфигурация базы данных alwaysdata.com
+db_config = {
+    'host': 'mysql-ostrova.alwaysdata.net',
+    'database': 'ostrova_base',
     'user': 'ostrova',
-    'password': 'ZVD-5rM-5Ru-UDW',
-    'db': 'ostrova_base',
-    'charset': 'utf8mb4',
-    'cursorclass': cursors.DictCursor
+    'password': 'ZVD-5rM-5Ru-UDW'  # Замените на реальный пароль
 }
 
-# Инициализация VK API
-vk_session = vk_api.VkApi(token=VK_TOKEN)
+vk_session = vk_api.VkApi(token=token)
 vk = vk_session.get_api()
 
-# Глобальные словари для хранения состояний
+# Глобальные словари для хранения состояний пользователей
 user_state = {}
-user_data_cache = {}
 
-def get_db_connection():
+def create_db_connection():
     try:
-        connection = pymysql.connect(**DB_CONFIG)
+        connection = mysql.connector.connect(**db_config)
         return connection
-    except Exception as e:
-        logger.error(f"Ошибка подключения к базе данных: {e}")
+    except Error as e:
+        print(f"Ошибка подключения к MySQL: {e}")
         return None
 
 def get_keyboard(name, user_id=None):
     kb = VkKeyboard(one_time=False)
+
     if name == "null":
         kb.add_button('На главную', color=VkKeyboardColor.PRIMARY)
+
     elif name == "main":
         kb.add_button('Личный кабинет')
         kb.add_line()
         kb.add_button('Кружки и Мероприятия')
         kb.add_line()
         kb.add_button('Вопросы')
+
     elif name == "personal_account":
-        if is_user_registered(user_id):
-            kb.add_button('Информация')
-            kb.add_line()
-            kb.add_button('Мои записи')
-            kb.add_line()
-            kb.add_button('На главную', color=VkKeyboardColor.PRIMARY)
-        else:
-            kb.add_button('Зарегистрироваться')
-            kb.add_line()
-            kb.add_button('На главную', color=VkKeyboardColor.PRIMARY)
+        connection = create_db_connection()
+        if connection:
+            cursor = connection.cursor(dictionary=True)
+            cursor.execute("SELECT * FROM Users WHERE user_id = %s", (user_id,))
+            user = cursor.fetchone()
+            connection.close()
+            
+            if user:
+                kb.add_button('Информация')
+                kb.add_line()
+                kb.add_button('Мои записи')
+                kb.add_line()
+                kb.add_button('На главную', color=VkKeyboardColor.PRIMARY)
+            else:
+                kb.add_button('Зарегистрироваться')
+                kb.add_line()
+                kb.add_button('На главную', color=VkKeyboardColor.PRIMARY)
+
     elif name == "edit_info":
         kb.add_button('Имя и Фамилия')
         kb.add_line()
@@ -77,829 +75,504 @@ def get_keyboard(name, user_id=None):
         kb.add_button('Номер телефона')
         kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
+
     elif name == "get_name":
         kb.add_button('Взять с профиля', color=VkKeyboardColor.POSITIVE)
         kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
+
     elif name == "get_birthdate":
         kb.add_button('Взять с профиля', color=VkKeyboardColor.POSITIVE)
         kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
+
     elif name == "activities":
         kb.add_button('Кружок')
         kb.add_line()
         kb.add_button('Мероприятие')
         kb.add_line()
         kb.add_button('На главную', color=VkKeyboardColor.PRIMARY)
+
     elif name == "clubs":
-        clubs = get_active_clubs()
-        for i, club in enumerate(clubs):
-            if i > 0 and i % 2 == 0:
+        connection = create_db_connection()
+        if connection:
+            cursor = connection.cursor(dictionary=True)
+            cursor.execute("SELECT * FROM Clubs WHERE active = TRUE")
+            clubs = cursor.fetchall()
+            connection.close()
+            
+            for club in clubs:
+                kb.add_button(club['name'])
                 kb.add_line()
-            kb.add_button(club['name'])
-        kb.add_line()
-        kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
+            kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
+
     elif name == "club_dates":
-        club_id = user_state[user_id]['club_id']
-        dates = get_club_dates(club_id)
-        for i, date in enumerate(dates):
-            if i > 0 and i % 2 == 0:
-                kb.add_line()
-            kb.add_button(date['display'])
-        kb.add_line()
-        kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
+        if 'club_id' in user_state.get(user_id, {}):
+            club_id = user_state[user_id]['club_id']
+            connection = create_db_connection()
+            if connection:
+                cursor = connection.cursor(dictionary=True)
+                cursor.execute("""
+                    SELECT DISTINCT date, day_of_week 
+                    FROM Club_Schedule 
+                    WHERE club_id = %s AND date >= CURDATE()
+                    ORDER BY date
+                    LIMIT 5
+                """, (club_id,))
+                dates = cursor.fetchall()
+                connection.close()
+                
+                for d in dates:
+                    formatted_date = d['date'].strftime('%d.%m.%Y')
+                    kb.add_button(f"{formatted_date} ({d['day_of_week']})")
+                    kb.add_line()
+                kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
+
     elif name == "club_times":
-        schedule_id = user_state[user_id]['schedule_id']
-        times = get_schedule_times(schedule_id)
-        for time_str in times:
-            kb.add_button(time_str)
-            kb.add_line()
-        kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
+        if 'club_id' in user_state.get(user_id, {}) and 'selected_date' in user_state.get(user_id, {}):
+            club_id = user_state[user_id]['club_id']
+            selected_date = user_state[user_id]['selected_date']
+            
+            connection = create_db_connection()
+            if connection:
+                cursor = connection.cursor(dictionary=True)
+                cursor.execute("""
+                    SELECT schedule_id, start_time, end_time, max_participants, current_participants
+                    FROM Club_Schedule
+                    WHERE club_id = %s AND date = %s AND current_participants < max_participants
+                    ORDER BY start_time
+                """, (club_id, selected_date))
+                times = cursor.fetchall()
+                connection.close()
+                
+                for t in times:
+                    start_time = t['start_time'].strftime('%H:%M')
+                    end_time = t['end_time'].strftime('%H:%M')
+                    kb.add_button(f"{start_time}-{end_time} ({t['current_participants']}/{t['max_participants']})")
+                    kb.add_line()
+                    user_state[user_id]['schedule_choices'] = {f"{start_time}-{end_time}": t['schedule_id']}
+                kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
+
     elif name == "confirm_registration":
         kb.add_button('Подтверждаю', color=VkKeyboardColor.POSITIVE)
         kb.add_line()
         kb.add_button('Не подтверждаю', color=VkKeyboardColor.NEGATIVE)
+
     elif name == "events":
-        events = get_active_events()
-        for event in events:
-            kb.add_button(event['name'])
-            kb.add_line()
-        kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
+        connection = create_db_connection()
+        if connection:
+            cursor = connection.cursor(dictionary=True)
+            cursor.execute("SELECT * FROM Events WHERE active = TRUE AND date >= CURDATE()")
+            events = cursor.fetchall()
+            connection.close()
+            
+            for event in events:
+                kb.add_button(event['name'])
+                kb.add_line()
+            kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
+
     elif name == "questions":
         kb.add_button('Часто задаваемые вопросы')
         kb.add_line()
         kb.add_button('Свой вопрос')
         kb.add_line()
         kb.add_button('На главную', color=VkKeyboardColor.PRIMARY)
+
     elif name == "faq":
-        categories = get_faq_categories()
-        for category in categories:
-            kb.add_button(category)
-            kb.add_line()
-        kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
+        connection = create_db_connection()
+        if connection:
+            cursor = connection.cursor(dictionary=True)
+            cursor.execute("SELECT * FROM FAQ")
+            faqs = cursor.fetchall()
+            connection.close()
+            
+            for faq in faqs:
+                kb.add_button(faq['question'])
+                kb.add_line()
+            kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
+
     return kb
 
-# Функции для работы с базой данных
-def is_user_registered(user_id):
-    conn = get_db_connection()
-    if not conn:
-        return False
-    
-    try:
-        with conn.cursor() as cursor:
-            sql = "SELECT * FROM Users WHERE user_id = %s"
-            cursor.execute(sql, (user_id,))
-            result = cursor.fetchone()
-            return result is not None
-    except Exception as e:
-        logger.error(f"Ошибка при проверке регистрации пользователя: {e}")
-        return False
-    finally:
-        conn.close()
-
-def register_user(user_id, first_name, last_name, birthdate, phone):
-    conn = get_db_connection()
-    if not conn:
-        return False
-    
-    try:
-        with conn.cursor() as cursor:
-            sql = """
-            INSERT INTO Users (user_id, first_name, last_name, birthdate, phone, reg_date)
-            VALUES (%s, %s, %s, %s, %s, CURDATE())
-            """
-            cursor.execute(sql, (user_id, first_name, last_name, birthdate, phone))
-            conn.commit()
-            return True
-    except Exception as e:
-        logger.error(f"Ошибка при регистрации пользователя: {e}")
-        return False
-    finally:
-        conn.close()
-
-def get_active_clubs():
-    conn = get_db_connection()
-    if not conn:
-        return []
-    
-    try:
-        with conn.cursor() as cursor:
-            sql = "SELECT * FROM Clubs WHERE active = TRUE"
-            cursor.execute(sql)
-            return cursor.fetchall()
-    except Exception as e:
-        logger.error(f"Ошибка при получении активных кружков: {e}")
-        return []
-    finally:
-        conn.close()
-
-def get_club_dates(club_id):
-    conn = get_db_connection()
-    if not conn:
-        return []
-    
-    try:
-        with conn.cursor() as cursor:
-            sql = """
-            SELECT 
-                schedule_id, 
-                club_id, 
-                date, 
-                day_of_week, 
-                start_time, 
-                end_time 
-            FROM Club_Schedule 
-            WHERE club_id = %s AND date >= CURDATE()
-            ORDER BY date
-            """
-            cursor.execute(sql, (club_id,))
-            schedules = cursor.fetchall()
-            
-            dates = []
-            for s in schedules:
-                date_str = s['date'].strftime('%d.%m.%Y')
-                dates.append({
-                    'date': date_str,
-                    'display': f"{date_str} ({s.get('day_of_week', '')})",
-                    'schedule_id': s['schedule_id']
-                })
-            return dates
-    except Exception as e:
-        logger.error(f"Ошибка при получении дат кружка: {e}")
-        return []
-    finally:
-        conn.close()
-
-def get_schedule_times(schedule_id):
-    conn = get_db_connection()
-    if not conn:
-        return []
-    
-    try:
-        with conn.cursor() as cursor:
-            sql = """
-            SELECT 
-                start_time, 
-                end_time 
-            FROM Club_Schedule 
-            WHERE schedule_id = %s
-            """
-            cursor.execute(sql, (schedule_id,))
-            schedule = cursor.fetchone()
-            
-            if schedule:
-                start = schedule['start_time'].strftime('%H:%M')
-                end = schedule['end_time'].strftime('%H:%M')
-                return [f"{start}-{end}"]
-            return []
-    except Exception as e:
-        logger.error(f"Ошибка при получении времени занятий: {e}")
-        return []
-    finally:
-        conn.close()
-
-def get_active_events():
-    conn = get_db_connection()
-    if not conn:
-        return []
-    
-    try:
-        with conn.cursor() as cursor:
-            sql = """
-            SELECT 
-                event_id,
-                name,
-                description,
-                date,
-                time,
-                location,
-                max_participants,
-                current_participants
-            FROM Events 
-            WHERE active = TRUE AND date >= CURDATE()
-            ORDER BY date, time
-            """
-            cursor.execute(sql)
-            return cursor.fetchall()
-    except Exception as e:
-        logger.error(f"Ошибка при получении активных мероприятий: {e}")
-        return []
-    finally:
-        conn.close()
-
-def get_faq_categories():
-    conn = get_db_connection()
-    if not conn:
-        return []
-    
-    try:
-        with conn.cursor() as cursor:
-            sql = "SELECT DISTINCT category FROM FAQ"
-            cursor.execute(sql)
-            categories = cursor.fetchall()
-            return [c['category'] for c in categories] if categories else []
-    except Exception as e:
-        logger.error(f"Ошибка при получении категорий FAQ: {e}")
-        return []
-    finally:
-        conn.close()
-
-def get_faq_by_category(category):
-    conn = get_db_connection()
-    if not conn:
-        return []
-    
-    try:
-        with conn.cursor() as cursor:
-            sql = "SELECT question, answer FROM FAQ WHERE category = %s"
-            cursor.execute(sql, (category,))
-            return cursor.fetchall()
-    except Exception as e:
-        logger.error(f"Ошибка при получении FAQ по категории: {e}")
-        return []
-    finally:
-        conn.close()
-
-def register_for_club(user_id, club_id, schedule_id):
-    conn = get_db_connection()
-    if not conn:
-        return False
-    
-    try:
-        with conn.cursor() as cursor:
-            # Добавляем запись о регистрации
-            sql = """
-            INSERT INTO Registrations (
-                user_id, 
-                type, 
-                item_id, 
-                date, 
-                time, 
-                status
-            ) VALUES (%s, 'club', %s, CURDATE(), CURTIME(), 'active')
-            """
-            cursor.execute(sql, (user_id, club_id))
-            
-            # Обновляем количество участников
-            sql = """
-            UPDATE Club_Schedule 
-            SET current_participants = current_participants + 1 
-            WHERE schedule_id = %s
-            """
-            cursor.execute(sql, (schedule_id,))
-            
-            conn.commit()
-            return True
-    except Exception as e:
-        logger.error(f"Ошибка при регистрации на кружок: {e}")
-        return False
-    finally:
-        conn.close()
-
-def register_for_event(user_id, event_id):
-    conn = get_db_connection()
-    if not conn:
-        return False
-    
-    try:
-        with conn.cursor() as cursor:
-            # Добавляем запись о регистрации
-            sql = """
-            INSERT INTO Registrations (
-                user_id, 
-                type, 
-                item_id, 
-                date, 
-                time, 
-                status
-            ) VALUES (%s, 'event', %s, CURDATE(), CURTIME(), 'active')
-            """
-            cursor.execute(sql, (user_id, event_id))
-            
-            # Обновляем количество участников мероприятия
-            sql = """
-            UPDATE Events 
-            SET current_participants = current_participants + 1 
-            WHERE event_id = %s
-            """
-            cursor.execute(sql, (event_id,))
-            
-            conn.commit()
-            return True
-    except Exception as e:
-        logger.error(f"Ошибка при регистрации на мероприятие: {e}")
-        return False
-    finally:
-        conn.close()
-
-def get_user_registrations(user_id):
-    conn = get_db_connection()
-    if not conn:
-        return {
-            'clubs': 'Ошибка при получении данных',
-            'events': 'Ошибка при получении данных'
-        }
-    
-    try:
-        with conn.cursor() as cursor:
-            # Получаем записи на кружки
-            sql = """
-            SELECT c.name 
-            FROM Registrations r
-            JOIN Clubs c ON r.item_id = c.club_id
-            WHERE r.user_id = %s AND r.type = 'club' AND r.status = 'active'
-            """
-            cursor.execute(sql, (user_id,))
-            club_regs = [r['name'] for r in cursor.fetchall()]
-            
-            # Получаем записи на мероприятия
-            sql = """
-            SELECT e.name, e.date 
-            FROM Registrations r
-            JOIN Events e ON r.item_id = e.event_id
-            WHERE r.user_id = %s AND r.type = 'event' AND r.status = 'active'
-            """
-            cursor.execute(sql, (user_id,))
-            event_regs = [
-                f"{r['name']} ({r['date'].strftime('%d.%m.%Y')})" 
-                for r in cursor.fetchall()
-            ]
-            
-            return {
-                'clubs': ', '.join(club_regs) if club_regs else 'Нет записей',
-                'events': ', '.join(event_regs) if event_regs else 'Нет записей'
-            }
-    except Exception as e:
-        logger.error(f"Ошибка при получении регистраций пользователя: {e}")
-        return {
-            'clubs': 'Ошибка при получении данных',
-            'events': 'Ошибка при получении данных'
-        }
-    finally:
-        conn.close()
-
-@app.route('/callback', methods=['POST'])
+@app.route('/callback', methods=['POST', 'GET'])
 def callback():
-    try:
-        data = request.get_json()
-        if 'type' not in data:
-            return 'not vk', 200
-        
-        if data['type'] == 'confirmation':
-            return CONFIRMATION_TOKEN, 200
-        
-        if data['type'] == 'message_new':
-            message = data['object']['message']['text']
-            user_id = data['object']['message']['from_id']
-            logger.info(f"Получено сообщение от {user_id}: {message}")
+    data = json.loads(request.data)
+
+    if request.method == 'GET':
+        return 'I am alive!', 200
+
+    if 'type' not in data:
+        return 'not vk'
+
+    if data['type'] == 'confirmation':
+        return confirmation_token
+
+    elif data['type'] == 'message_new':
+        message = data['object']['message']['text']
+        user_id = data['object']['message']['from_id']
+
+        # Обработка состояний пользователя
+        if user_id in user_state:
+            state = user_state[user_id]
             
-            # Обработка состояний пользователя
+            if state['state'] == 'waiting_for_name':
+                names = message.split()
+                if len(names) >= 2:
+                    connection = create_db_connection()
+                    if connection:
+                        cursor = connection.cursor()
+                        cursor.execute("""
+                            INSERT INTO Users (user_id, first_name, last_name, reg_date)
+                            VALUES (%s, %s, %s, CURDATE())
+                            ON DUPLICATE KEY UPDATE first_name = %s, last_name = %s
+                        """, (user_id, names[1], names[0], names[1], names[0]))
+                        connection.commit()
+                        connection.close()
+                    
+                    user_state[user_id] = {'state': 'waiting_for_birthdate'}
+                    send_message(user_id, "Ваша дата рождения? (формат: ДД.ММ.ГГГГ)", get_keyboard("get_birthdate", user_id))
+                else:
+                    send_message(user_id, "Пожалуйста, введите имя и фамилию через пробел (например: Иванов Иван)")
+                return 'ok'
+            
+            elif state['state'] == 'waiting_for_birthdate':
+                try:
+                    birthdate = datetime.strptime(message, '%d.%m.%Y').date()
+                    connection = create_db_connection()
+                    if connection:
+                        cursor = connection.cursor()
+                        cursor.execute("""
+                            UPDATE Users SET birthdate = %s WHERE user_id = %s
+                        """, (birthdate, user_id))
+                        connection.commit()
+                        connection.close()
+                    
+                    user_state[user_id] = {'state': 'waiting_for_phone'}
+                    send_message(user_id, "Ваш номер телефона?", get_keyboard("null"))
+                except ValueError:
+                    send_message(user_id, "Пожалуйста, введите дату в формате ДД.ММ.ГГГГ")
+                return 'ok'
+            
+            elif state['state'] == 'waiting_for_phone':
+                connection = create_db_connection()
+                if connection:
+                    cursor = connection.cursor()
+                    cursor.execute("""
+                        UPDATE Users SET phone = %s WHERE user_id = %s
+                    """, (message, user_id))
+                    connection.commit()
+                    connection.close()
+                
+                del user_state[user_id]
+                send_message(user_id, "Спасибо за регистрацию!", get_keyboard("main"))
+                return 'ok'
+            
+            elif state['state'] == 'waiting_for_question':
+                # Здесь можно сохранить вопрос в базу данных или отправить администратору
+                send_message(user_id, "Подождите, скоро оператор свяжется с вами!", get_keyboard("null"))
+                del user_state[user_id]
+                return 'ok'
+
+        # Обработка основных команд
+        if message == "Начать":
+            send_message(user_id, "Приветствуем тебя в молодежном клубе «Острова». Мы – часть большой семьи молодежного центра «Охта».", get_keyboard("main"))
+        
+        elif message == "На главную":
+            send_message(user_id, "Вот меню для получения информации:", get_keyboard("main"))
+        
+        elif message == "Личный кабинет":
+            send_message(user_id, "Выберите действие", get_keyboard("personal_account", user_id))
+        
+        elif message == "Зарегистрироваться":
+            user_state[user_id] = {'state': 'waiting_for_name'}
+            send_message(user_id, "Прежде чем производить запись на кружок или мероприятие давайте зарегистрируемся! Ваши фамилия и имя(через пробел)?", get_keyboard("get_name", user_id))
+        
+        elif message == "Взять с профиля":
             if user_id in user_state:
-                state = user_state[user_id]['state']
-                
-                if state == 'waiting_for_name':
-                    names = message.split()
-                    if len(names) >= 2:
-                        user_data_cache[user_id] = {
-                            'first_name': names[0],
-                            'last_name': ' '.join(names[1:]),
-                            'birthdate': None,
-                            'phone': None
-                        }
+                state = user_state[user_id]
+                if state['state'] == 'waiting_for_name':
+                    # Получаем данные из профиля VK
+                    try:
+                        user_info = vk.users.get(user_ids=user_id, fields='first_name,last_name,bdate')[0]
+                        first_name = user_info.get('first_name', '')
+                        last_name = user_info.get('last_name', '')
+                        
+                        connection = create_db_connection()
+                        if connection:
+                            cursor = connection.cursor()
+                            cursor.execute("""
+                                INSERT INTO Users (user_id, first_name, last_name, reg_date)
+                                VALUES (%s, %s, %s, CURDATE())
+                                ON DUPLICATE KEY UPDATE first_name = %s, last_name = %s
+                            """, (user_id, first_name, last_name, first_name, last_name))
+                            connection.commit()
+                            connection.close()
+                        
                         user_state[user_id] = {'state': 'waiting_for_birthdate'}
-                        send_message(
-                            user_id, 
-                            "Ваша дата рождения? (формат: ДД.ММ.ГГГГ)", 
-                            get_keyboard("get_birthdate", user_id)
-                        )
-                    else:
-                        send_message(
-                            user_id, 
-                            "Пожалуйста, введите имя и фамилию через пробел (например: Иван Иванов)"
-                        )
-                    return 'ok', 200
-                
-                elif state == 'waiting_for_birthdate':
-                    try:
-                        datetime.strptime(message, '%d.%m.%Y')
-                        user_data_cache[user_id]['birthdate'] = message
-                        user_state[user_id] = {'state': 'waiting_for_phone'}
-                        send_message(user_id, "Ваш номер телефона?", get_keyboard("null"))
-                    except ValueError:
-                        send_message(user_id, "Пожалуйста, введите дату в формате ДД.ММ.ГГГГ")
-                    return 'ok', 200
-                
-                elif state == 'waiting_for_phone':
-                    user_data_cache[user_id]['phone'] = message
-                    if register_user(
-                        user_id,
-                        user_data_cache[user_id]['first_name'],
-                        user_data_cache[user_id]['last_name'],
-                        user_data_cache[user_id]['birthdate'],
-                        user_data_cache[user_id]['phone']
-                    ):
-                        send_message(user_id, "Спасибо за регистрацию!", get_keyboard("main"))
-                    else:
-                        send_message(
-                            user_id, 
-                            "Произошла ошибка при регистрации. Пожалуйста, попробуйте позже.", 
-                            get_keyboard("main")
-                        )
-                    del user_state[user_id]
-                    del user_data_cache[user_id]
-                    return 'ok', 200
-                
-                elif state == 'waiting_for_question':
-                    send_message(
-                        user_id, 
-                        "Спасибо за вопрос! Мы свяжемся с вами в ближайшее время.", 
-                        get_keyboard("main")
-                    )
-                    del user_state[user_id]
-                    return 'ok', 200
-                
-                elif state == 'waiting_for_club_date':
-                    club_id = user_state[user_id]['club_id']
-                    dates = get_club_dates(club_id)
-                    selected_date = next((d for d in dates if d['display'] == message), None)
-                    if selected_date:
-                        user_state[user_id] = {
-                            'state': 'waiting_for_club_time',
-                            'club_id': club_id,
-                            'schedule_id': selected_date['schedule_id']
-                        }
-                        send_message(
-                            user_id, 
-                            "Выберите время занятия:", 
-                            get_keyboard("club_times", user_id)
-                        )
-                    else:
-                        send_message(
-                            user_id, 
-                            "Пожалуйста, выберите дату из предложенных вариантов."
-                        )
-                    return 'ok', 200
-                
-                elif state == 'waiting_for_club_time':
-                    schedule_id = user_state[user_id]['schedule_id']
-                    times = get_schedule_times(schedule_id)
-                    if message in times:
-                        if register_for_club(user_id, user_state[user_id]['club_id'], schedule_id):
-                            clubs = get_active_clubs()
-                            club = next(
-                                (c for c in clubs 
-                                 if str(c['club_id']) == str(user_state[user_id]['club_id'])), 
-                                None
-                            )
-                            if club:
-                                send_message(
-                                    user_id, 
-                                    f"Вы успешно записаны на кружок {club['name']}!", 
-                                    get_keyboard("main")
-                                )
-                            else:
-                                send_message(
-                                    user_id, 
-                                    "Вы успешно записаны на кружок!", 
-                                    get_keyboard("main")
-                                )
-                        else:
-                            send_message(
-                                user_id, 
-                                "Произошла ошибка при записи. Пожалуйста, попробуйте позже.", 
-                                get_keyboard("main")
-                            )
-                        del user_state[user_id]
-                    else:
-                        send_message(
-                            user_id, 
-                            "Пожалуйста, выберите время из предложенных вариантов."
-                        )
-                    return 'ok', 200
-                
-                elif state == 'waiting_for_event_confirmation':
-                    if message == 'Подтверждаю':
-                        event_id = user_state[user_id]['event_id']
-                        if register_for_event(user_id, event_id):
-                            events = get_active_events()
-                            event = next(
-                                (e for e in events 
-                                 if str(e['event_id']) == str(event_id)), 
-                                None
-                            )
-                            if event:
-                                send_message(
-                                    user_id, 
-                                    f"Вы успешно записаны на мероприятие {event['name']}!", 
-                                    get_keyboard("main")
-                                )
-                            else:
-                                send_message(
-                                    user_id, 
-                                    "Вы успешно записаны на мероприятие!", 
-                                    get_keyboard("main")
-                                )
-                        else:
-                            send_message(
-                                user_id, 
-                                "Произошла ошибка при записи. Пожалуйста, попробуйте позже.", 
-                                get_keyboard("main")
-                            )
-                    else:
-                        send_message(user_id, "Запись отменена", get_keyboard("main"))
-                    del user_state[user_id]
-                    return 'ok', 200
-            
-            # Обработка основных команд
-            if message == "Начать":
-                send_message(
-                    user_id, 
-                    "Приветствуем тебя в молодежном клубе «Острова». Мы – часть большой семьи молодежного центра «Охта».", 
-                    get_keyboard("main")
-                )
-                return 'ok', 200
-            
-            elif message == "На главную":
-                send_message(
-                    user_id, 
-                    "Вот меню для получения информации:", 
-                    get_keyboard("main")
-                )
-                return 'ok', 200
-            
-            elif message == "Личный кабинет":
-                if is_user_registered(user_id):
-                    send_message(
-                        user_id, 
-                        "Выберите действие", 
-                        get_keyboard("personal_account", user_id)
-                    )
-                else:
-                    send_message(
-                        user_id, 
-                        "У вас отсутствует личный кабинет! Зарегистрируйте его!", 
-                        get_keyboard("personal_account", user_id)
-                    )
-                return 'ok', 200
-            
-            elif message == "Зарегистрироваться":
-                user_state[user_id] = {'state': 'waiting_for_name'}
-                send_message(
-                    user_id, 
-                    "Прежде чем производить запись на кружок или мероприятие давайте зарегистрируемся! Ваши фамилия и имя (через пробел)?", 
-                    get_keyboard("get_name", user_id)
-                )
-                return 'ok', 200
-            
-            elif message == "Взять с профиля":
-                if user_id in user_state:
-                    state = user_state[user_id]['state']
-                    if state == 'waiting_for_name':
-                        try:
-                            user_info = vk.users.get(
-                                user_ids=user_id, 
-                                fields='first_name,last_name,bdate'
-                            )[0]
-                            user_data_cache[user_id] = {
-                                'first_name': user_info['first_name'],
-                                'last_name': user_info['last_name'],
-                                'birthdate': None,
-                                'phone': None
-                            }
-                            user_state[user_id] = {'state': 'waiting_for_birthdate'}
-                            send_message(
-                                user_id, 
-                                "Ваша дата рождения? (формат: ДД.ММ.ГГГГ)", 
-                                get_keyboard("get_birthdate", user_id)
-                            )
-                        except Exception as e:
-                            logger.error(f"Ошибка при получении данных профиля: {e}")
-                            send_message(
-                                user_id, 
-                                "Не удалось получить данные из профиля. Введите имя и фамилию вручную."
-                            )
-                    elif state == 'waiting_for_birthdate':
-                        try:
-                            user_info = vk.users.get(
-                                user_ids=user_id, 
-                                fields='bdate'
-                            )[0]
-                            if 'bdate' in user_info:
-                                user_data_cache[user_id]['birthdate'] = user_info['bdate']
-                                user_state[user_id] = {'state': 'waiting_for_phone'}
-                                send_message(
-                                    user_id, 
-                                    "Ваш номер телефона?", 
-                                    get_keyboard("null")
-                                )
-                            else:
-                                send_message(
-                                    user_id, 
-                                    "Дата рождения не указана в профиле. Введите вручную."
-                                )
-                        except Exception as e:
-                            logger.error(f"Ошибка при получении даты рождения: {e}")
-                            send_message(
-                                user_id, 
-                                "Не удалось получить данные из профиля. Введите дату рождения вручную."
-                            )
-                return 'ok', 200
-            
-            elif message == "Информация":
-                if is_user_registered(user_id):
-                    try:
-                        conn = get_db_connection()
-                        if conn:
-                            with conn.cursor() as cursor:
-                                sql = "SELECT * FROM Users WHERE user_id = %s"
-                                cursor.execute(sql, (user_id,))
-                                user = cursor.fetchone()
-                                
-                                if user:
-                                    response = (
-                                        f"Ваши данные:\n"
-                                        f"Имя: {user.get('first_name', 'не указано')}\n"
-                                        f"Фамилия: {user.get('last_name', 'не указана')}\n"
-                                        f"Дата рождения: {user.get('birthdate', 'не указана')}\n"
-                                        f"Телефон: {user.get('phone', 'не указан')}"
-                                    )
-                                    send_message(
-                                        user_id, 
-                                        response, 
-                                        get_keyboard("edit_info", user_id)
-                                    )
-                                else:
-                                    send_message(
-                                        user_id, 
-                                        "Ваши данные не найдены", 
-                                        get_keyboard("personal_account", user_id)
-                                    )
-                            conn.close()
+                        send_message(user_id, "Ваша дата рождения? (формат: ДД.ММ.ГГГГ)", get_keyboard("get_birthdate", user_id))
+                    
                     except Exception as e:
-                        logger.error(f"Ошибка при получении информации пользователя: {e}")
-                        send_message(
-                            user_id, 
-                            "Ошибка при получении данных. Пожалуйста, попробуйте позже.", 
-                            get_keyboard("personal_account", user_id)
-                        )
-                return 'ok', 200
-            
-            elif message == "Мои записи":
-                if is_user_registered(user_id):
-                    regs = get_user_registrations(user_id)
-                    response = (
-                        f"Ваши записи:\n"
-                        f"Кружки: {regs['clubs']}\n"
-                        f"Мероприятия: {regs['events']}"
-                    )
-                    send_message(
-                        user_id, 
-                        response, 
-                        get_keyboard("personal_account", user_id)
-                    )
-                return 'ok', 200
-            
-            elif message == "Кружки и Мероприятия":
-                send_message(
-                    user_id, 
-                    "Выберите о чем хотите посмотреть информацию", 
-                    get_keyboard("activities", user_id)
-                )
-                return 'ok', 200
-            
-            elif message == "Кружок":
-                if not is_user_registered(user_id):
-                    send_message(
-                        user_id, 
-                        "У вас отсутствует личный кабинет! Зарегистрируйте его!", 
-                        get_keyboard("personal_account", user_id)
-                    )
+                        send_message(user_id, "Не удалось получить данные из профиля. Введите имя и фамилию вручную.")
+                
+                elif state['state'] == 'waiting_for_birthdate':
+                    try:
+                        user_info = vk.users.get(user_ids=user_id, fields='bdate')[0]
+                        bdate = user_info.get('bdate', '')
+                        if bdate:
+                            try:
+                                birthdate = datetime.strptime(bdate, '%d.%m.%Y').date()
+                                connection = create_db_connection()
+                                if connection:
+                                    cursor = connection.cursor()
+                                    cursor.execute("""
+                                        UPDATE Users SET birthdate = %s WHERE user_id = %s
+                                    """, (birthdate, user_id))
+                                    connection.commit()
+                                    connection.close()
+                                
+                                user_state[user_id] = {'state': 'waiting_for_phone'}
+                                send_message(user_id, "Ваш номер телефона?", get_keyboard("null"))
+                            except ValueError:
+                                send_message(user_id, "Не удалось распознать дату рождения из профиля. Введите вручную в формате ДД.ММ.ГГГГ")
+                        else:
+                            send_message(user_id, "Дата рождения не указана в профиле. Введите вручную в формате ДД.ММ.ГГГГ")
+                    except Exception as e:
+                        send_message(user_id, "Не удалось получить данные из профиля. Введите дату рождения вручную.")
+        
+        elif message == "Информация":
+            connection = create_db_connection()
+            if connection:
+                cursor = connection.cursor(dictionary=True)
+                cursor.execute("SELECT * FROM Users WHERE user_id = %s", (user_id,))
+                user = cursor.fetchone()
+                connection.close()
+                
+                if user:
+                    response = f"Ваши данные:\nИмя: {user.get('first_name', 'не указано')}\nФамилия: {user.get('last_name', 'не указано')}\n"
+                    response += f"Дата рождения: {user['birthdate'].strftime('%d.%m.%Y') if user.get('birthdate') else 'не указана'}\n"
+                    response += f"Телефон: {user.get('phone', 'не указан')}"
+                    send_message(user_id, response, get_keyboard("edit_info", user_id))
                 else:
-                    send_message(
-                        user_id, 
-                        "Выберите интересующее вас направление", 
-                        get_keyboard("clubs", user_id)
-                    )
-                return 'ok', 200
-            
-            elif message in [club['name'] for club in get_active_clubs()]:
-                club = next(
-                    (c for c in get_active_clubs() 
-                     if c['name'] == message), 
-                    None
-                )
+                    send_message(user_id, "Вы не зарегистрированы!", get_keyboard("personal_account", user_id))
+        
+        elif message == "Мои записи":
+            connection = create_db_connection()
+            if connection:
+                cursor = connection.cursor(dictionary=True)
+                
+                # Получаем записи на кружки
+                cursor.execute("""
+                    SELECT c.name, cs.date, cs.start_time, cs.end_time 
+                    FROM Registrations r
+                    JOIN Club_Schedule cs ON r.item_id = cs.schedule_id
+                    JOIN Clubs c ON cs.club_id = c.club_id
+                    WHERE r.user_id = %s AND r.type = 'club' AND r.status = 'active'
+                """, (user_id,))
+                club_regs = cursor.fetchall()
+                
+                # Получаем записи на мероприятия
+                cursor.execute("""
+                    SELECT e.name, e.date, e.time, e.location 
+                    FROM Registrations r
+                    JOIN Events e ON r.item_id = e.event_id
+                    WHERE r.user_id = %s AND r.type = 'event' AND r.status = 'active'
+                """, (user_id,))
+                event_regs = cursor.fetchall()
+                
+                connection.close()
+                
+                response = "Ваши записи:\n\n"
+                response += "Кружки:\n"
+                if club_regs:
+                    for reg in club_regs:
+                        response += f"- {reg['name']} {reg['date'].strftime('%d.%m.%Y')} {reg['start_time'].strftime('%H:%M')}-{reg['end_time'].strftime('%H:%M')}\n"
+                else:
+                    response += "Нет записей\n"
+                
+                response += "\nМероприятия:\n"
+                if event_regs:
+                    for reg in event_regs:
+                        response += f"- {reg['name']} {reg['date'].strftime('%d.%m.%Y')} {reg['time'].strftime('%H:%M')} ({reg['location']})\n"
+                else:
+                    response += "Нет записей\n"
+                
+                send_message(user_id, response, get_keyboard("personal_account", user_id))
+        
+        elif message == "Кружки и Мероприятия":
+            send_message(user_id, "Выберите о чем хотите посмотреть информацию", get_keyboard("activities", user_id))
+        
+        elif message == "Кружок":
+            connection = create_db_connection()
+            if connection:
+                cursor = connection.cursor(dictionary=True)
+                cursor.execute("SELECT * FROM Users WHERE user_id = %s", (user_id,))
+                user = cursor.fetchone()
+                connection.close()
+                
+                if not user:
+                    send_message(user_id, "У вас отсутствует личный кабинет! Зарегистрируйте его!", get_keyboard("personal_account", user_id))
+                else:
+                    send_message(user_id, "Выберите интересующее вас направление", get_keyboard("clubs", user_id))
+        
+        elif message.startswith("Круговая тренировка") or message.startswith("Занятие по английскому языку") or message.startswith("Мастерская рукоделия") or message.startswith("Клуб") or message.startswith("Кружок") or message.startswith("Игротека") or message.startswith("Стретчинг") or message.startswith("Электроника") or message.startswith("Психологическая мастерская") or message.startswith("Сплит тренировка"):
+            connection = create_db_connection()
+            if connection:
+                cursor = connection.cursor(dictionary=True)
+                cursor.execute("SELECT club_id FROM Clubs WHERE name = %s", (message,))
+                club = cursor.fetchone()
+                connection.close()
+                
                 if club:
-                    user_state[user_id] = {
-                        'state': 'waiting_for_club_date',
-                        'club_id': club['club_id']
-                    }
-                    response = (
-                        f"{club['name']}\n"
-                        f"{club.get('description', 'Описание отсутствует')}\n"
-                        f"Выберите дату занятия:"
-                    )
-                    send_message(
-                        user_id, 
-                        response, 
-                        get_keyboard("club_dates", user_id)
-                    )
-                return 'ok', 200
-            
-            elif message == "Мероприятие":
-                send_message(
-                    user_id, 
-                    "Выберите интересующее вас мероприятие", 
-                    get_keyboard("events", user_id)
-                )
-                return 'ok', 200
-            
-            elif message in [event['name'] for event in get_active_events()]:
-                event = next(
-                    (e for e in get_active_events() 
-                     if e['name'] == message), 
-                    None
-                )
-                if event:
-                    user_state[user_id] = {
-                        'state': 'waiting_for_event_confirmation',
-                        'event_id': event['event_id']
-                    }
-                    response = (
-                        f"{event['name']}\n"
-                        f"Дата: {event.get('date', 'не указана')}\n"
-                        f"Время: {event.get('time', 'не указано')}\n"
-                        f"Место: {event.get('location', 'не указано')}\n"
-                        f"Описание: {event.get('description', 'отсутствует')}\n"
-                        f"Подтвердите запись:"
-                    )
-                    send_message(
-                        user_id, 
-                        response, 
-                        get_keyboard("confirm_registration", user_id)
-                    )
-                return 'ok', 200
-            
-            elif message == "Вопросы":
-                send_message(
-                    user_id, 
-                    "Есть вопросы?", 
-                    get_keyboard("questions", user_id)
-                )
-                return 'ok', 200
-            
-            elif message == "Часто задаваемые вопросы":
-                send_message(
-                    user_id, 
-                    "Выберите категорию вопроса:", 
-                    get_keyboard("faq", user_id)
-                )
-                return 'ok', 200
-            
-            elif message in get_faq_categories():
-                faqs = get_faq_by_category(message)
-                response = "Часто задаваемые вопросы:\n"
-                for faq in faqs:
-                    response += f"Q: {faq.get('question', 'Вопрос отсутствует')}\n"
-                    response += f"A: {faq.get('answer', 'Ответ отсутствует')}\n"
-                send_message(
-                    user_id, 
-                    response.strip(), 
-                    get_keyboard("faq", user_id)
-                )
-                return 'ok', 200
-            
-            elif message == "Свой вопрос":
-                user_state[user_id] = {'state': 'waiting_for_question'}
-                send_message(
-                    user_id, 
-                    "Введите свой вопрос", 
-                    get_keyboard("null")
-                )
-                return 'ok', 200
-            
-            elif message == "Назад":
-                send_message(
-                    user_id, 
-                    "Возвращаемся назад", 
-                    get_keyboard("main")
-                )
-                return 'ok', 200
-            
-            return 'ok', 200
-    except Exception as e:
-        logger.error(f"Ошибка в обработке запроса: {e}")
-        return 'error', 500
+                    user_state[user_id] = {'state': 'choosing_club_date', 'club_id': club['club_id']}
+                    send_message(user_id, f"{message}: выберите дату", get_keyboard("club_dates", user_id))
+        
+        elif any(char.isdigit() for char in message) and 'choosing_club_date' in user_state.get(user_id, {}).get('state', ''):
+            # Парсим дату из сообщения (формат: 15.05.2023 (пн))
+            try:
+                date_part = message.split()[0]
+                selected_date = datetime.strptime(date_part, '%d.%m.%Y').date()
+                
+                user_state[user_id]['selected_date'] = selected_date
+                user_state[user_id]['state'] = 'choosing_club_time'
+                
+                connection = create_db_connection()
+                if connection:
+                    cursor = connection.cursor()
+                    cursor.execute("""
+                        UPDATE Club_Schedule SET day_of_week = DAYNAME(date) 
+                        WHERE date = %s AND day_of_week IS NULL
+                    """, (selected_date,))
+                    connection.commit()
+                    connection.close()
+                
+                send_message(user_id, "Выберите время занятия", get_keyboard("club_times", user_id))
+            except ValueError:
+                send_message(user_id, "Пожалуйста, выберите дату из предложенных вариантов")
+        
+        elif '-' in message and 'choosing_club_time' in user_state.get(user_id, {}).get('state', ''):
+            # Пользователь выбрал время (формат: 15:00-16:00 (2/5))
+            if 'schedule_choices' in user_state[user_id]:
+                schedule_id = user_state[user_id]['schedule_choices'].get(message.split()[0])
+                if schedule_id:
+                    user_state[user_id]['schedule_id'] = schedule_id
+                    user_state[user_id]['state'] = 'confirming_club_registration'
+                    
+                    connection = create_db_connection()
+                    if connection:
+                        cursor = connection.cursor(dictionary=True)
+                        cursor.execute("""
+                            SELECT c.name, cs.date, cs.start_time, cs.end_time 
+                            FROM Club_Schedule cs
+                            JOIN Clubs c ON cs.club_id = c.club_id
+                            WHERE cs.schedule_id = %s
+                        """, (schedule_id,))
+                        schedule = cursor.fetchone()
+                        connection.close()
+                        
+                        if schedule:
+                            response = f"Проверьте вашу запись:\nКружок: {schedule['name']}\n"
+                            response += f"Дата: {schedule['date'].strftime('%d.%m.%Y')}\n"
+                            response += f"Время: {schedule['start_time'].strftime('%H:%M')}-{schedule['end_time'].strftime('%H:%M')}"
+                            send_message(user_id, response, get_keyboard("confirm_registration", user_id))
+        
+        elif message == "Подтверждаю" and 'confirming_club_registration' in user_state.get(user_id, {}).get('state', ''):
+            if 'schedule_id' in user_state[user_id]:
+                schedule_id = user_state[user_id]['schedule_id']
+                
+                connection = create_db_connection()
+                if connection:
+                    cursor = connection.cursor()
+                    try:
+                        # Проверяем, не записан ли уже пользователь
+                        cursor.execute("""
+                            SELECT * FROM Registrations 
+                            WHERE user_id = %s AND type = 'club' AND item_id = %s AND status = 'active'
+                        """, (user_id, schedule_id))
+                        existing_reg = cursor.fetchone()
+                        
+                        if existing_reg:
+                            send_message(user_id, "Вы уже записаны на это занятие!", get_keyboard("main"))
+                        else:
+                            # Записываем пользователя
+                            cursor.execute("""
+                                INSERT INTO Registrations 
+                                (user_id, type, item_id, date, time, status) 
+                                VALUES (%s, 'club', %s, CURDATE(), CURTIME(), 'active')
+                            """, (user_id, schedule_id))
+                            
+                            # Увеличиваем счетчик участников
+                            cursor.execute("""
+                                UPDATE Club_Schedule 
+                                SET current_participants = current_participants + 1 
+                                WHERE schedule_id = %s
+                            """, (schedule_id,))
+                            
+                            connection.commit()
+                            
+                            # Получаем информацию о записи для подтверждения
+                            cursor.execute("""
+                                SELECT c.name, cs.date, cs.start_time, cs.end_time 
+                                FROM Club_Schedule cs
+                                JOIN Clubs c ON cs.club_id = c.club_id
+                                WHERE cs.schedule_id = %s
+                            """, (schedule_id,))
+                            schedule = cursor.fetchone()
+                            
+                            send_message(user_id, f"Вы успешно записаны на {schedule['name']} {schedule['date'].strftime('%d.%m.%Y')} {schedule['start_time'].strftime('%H:%M')}-{schedule['end_time'].strftime('%H:%M')}!", get_keyboard("main"))
+                    except Error as e:
+                        connection.rollback()
+                        send_message(user_id, "Произошла ошибка при записи. Пожалуйста, попробуйте позже.", get_keyboard("main"))
+                    finally:
+                        connection.close()
+                
+                del user_state[user_id]
+            return 'ok'
+        
+        elif message == "Не подтверждаю":
+            send_message(user_id, "Запись отменена", get_keyboard("main"))
+            if user_id in user_state:
+                del user_state[user_id]
+        
+        elif message == "Мероприятие":
+            send_message(user_id, "Выберите интересующее вас мероприятие", get_keyboard("events", user_id))
+        
+        elif message == "Вопросы":
+            send_message(user_id, "Есть вопросы?", get_keyboard("questions", user_id))
+        
+        elif message == "Часто задаваемые вопросы":
+            send_message(user_id, "Возможно вам нужен ответ на один из этих вопросов", get_keyboard("faq", user_id))
+        
+        elif message == "Свой вопрос":
+            user_state[user_id] = {'state': 'waiting_for_question'}
+            send_message(user_id, "Введите свой вопрос", get_keyboard("null"))
+        
+        elif message == "Назад":
+            send_message(user_id, "Возвращаемся назад", get_keyboard("main"))
+        
+        else:
+            # Проверяем, является ли сообщение вопросом из FAQ
+            connection = create_db_connection()
+            if connection:
+                cursor = connection.cursor(dictionary=True)
+                cursor.execute("SELECT answer FROM FAQ WHERE question = %s", (message,))
+                faq = cursor.fetchone()
+                connection.close()
+                
+                if faq:
+                    send_message(user_id, faq['answer'], get_keyboard("faq", user_id))
+                else:
+                    send_message(user_id, "Не понимаю вашего сообщения. Пожалуйста, используйте кнопки.", get_keyboard("main"))
+
+        return 'ok'
+
+    return 'unsupported'
 
 def send_message(user_id, message, keyboard=None):
-    try:
-        vk.messages.send(
-            user_id=user_id,
-            message=message,
-            random_id=random.getrandbits(64),
-            keyboard=keyboard.get_keyboard() if keyboard else None
-        )
-    except Exception as e:
-        logger.error(f"Ошибка при отправке сообщения: {e}")
+    vk.messages.send(
+        user_id=user_id,
+        message=message,
+        random_id=random.getrandbits(64),
+        keyboard=keyboard.get_keyboard() if keyboard else None
+    )
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

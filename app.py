@@ -7,11 +7,7 @@ import time
 import logging
 import os
 import pymysql
-from pymysql.cursors import DictCursor
-from dotenv import load_dotenv
-
-# Загрузка переменных окружения
-load_dotenv()
+from pymysql import cursors
 
 # Настройка логирования
 logging.basicConfig(
@@ -22,13 +18,19 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Конфигурация из переменных окружения
-VK_TOKEN = os.getenv('VK_TOKEN')
-CONFIRMATION_TOKEN = os.getenv('CONFIRMATION_TOKEN')
-DB_HOST = os.getenv('DB_HOST')
-DB_USER = os.getenv('DB_USER')
-DB_PASSWORD = os.getenv('DB_PASSWORD')
-DB_NAME = os.getenv('DB_NAME')
+# Конфигурация
+VK_TOKEN = 'vk1.a.69EGRWB1sbkT5O5nNF5WLcI9rsjx9_gDHPEcWWAQvL26fMZVkzKmoHM4fBNQMGjLhkQDAD-0NU16OALmxM_HmsyF0gDykLWuIjU1YV5ZlyWqQZD_r_8qTKp8NYsH8-04_9d9q1UA6IvBbj4_qd8a5o_F4Fr75eSGKWyw0x1kt1XfhW_W3GEaEC_u2Nt2lcH7kv7qo8wdQatf6BzohS5asA'
+CONFIRMATION_TOKEN = 'c9d9ac77'
+
+# Настройки базы данных
+DB_CONFIG = {
+    'host': 'mysql-alwaysdata-ostrova.alwaysdata.com',
+    'user': 'ostrova',
+    'password': 'ostrova_base',
+    'db': 'ostrova_base',
+    'charset': 'utf8mb4',
+    'cursorclass': cursors.DictCursor
+}
 
 # Инициализация VK API
 vk_session = vk_api.VkApi(token=VK_TOKEN)
@@ -38,51 +40,13 @@ vk = vk_session.get_api()
 user_state = {}
 user_data_cache = {}
 
-class DatabaseManager:
-    def __init__(self):
-        self.connection = None
-        self.connect()
-    
-    def connect(self, retries=3, delay=5):
-        for attempt in range(retries):
-            try:
-                self.connection = pymysql.connect(
-                    host=DB_HOST,
-                    user=DB_USER,
-                    password=DB_PASSWORD,
-                    database=DB_NAME,
-                    cursorclass=DictCursor
-                )
-                logger.info("Успешное подключение к базе данных")
-                return True
-            except Exception as e:
-                logger.error(f"Ошибка подключения к базе данных (попытка {attempt + 1}): {e}")
-                if attempt < retries - 1:
-                    time.sleep(delay)
-        return False
-    
-    def execute_query(self, query, params=None, fetch_one=False, fetch_all=False, commit=False):
-        try:
-            with self.connection.cursor() as cursor:
-                cursor.execute(query, params or ())
-                if commit:
-                    self.connection.commit()
-                if fetch_one:
-                    return cursor.fetchone()
-                if fetch_all:
-                    return cursor.fetchall()
-                return None
-        except Exception as e:
-            logger.error(f"Ошибка выполнения запроса: {e}")
-            self.connection.rollback()
-            raise
-    
-    def close(self):
-        if self.connection:
-            self.connection.close()
-
-# Инициализация менеджера базы данных
-db_manager = DatabaseManager()
+def get_db_connection():
+    try:
+        connection = pymysql.connect(**DB_CONFIG)
+        return connection
+    except Exception as e:
+        logger.error(f"Ошибка подключения к базе данных: {e}")
+        return None
 
 def get_keyboard(name, user_id=None):
     kb = VkKeyboard(one_time=False)
@@ -177,204 +141,302 @@ def get_keyboard(name, user_id=None):
 
 # Функции для работы с базой данных
 def is_user_registered(user_id):
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
     try:
-        query = "SELECT 1 FROM Users WHERE user_id = %s"
-        result = db_manager.execute_query(query, (user_id,), fetch_one=True)
-        return result is not None
+        with conn.cursor() as cursor:
+            sql = "SELECT * FROM Users WHERE user_id = %s"
+            cursor.execute(sql, (user_id,))
+            result = cursor.fetchone()
+            return result is not None
     except Exception as e:
         logger.error(f"Ошибка при проверке регистрации пользователя: {e}")
         return False
+    finally:
+        conn.close()
 
 def register_user(user_id, first_name, last_name, birthdate, phone):
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
     try:
-        query = """
-        INSERT INTO Users (user_id, first_name, last_name, birthdate, phone, reg_date)
-        VALUES (%s, %s, %s, %s, %s, CURDATE())
-        """
-        db_manager.execute_query(query, (user_id, first_name, last_name, birthdate, phone), commit=True)
-        return True
+        with conn.cursor() as cursor:
+            sql = """
+            INSERT INTO Users (user_id, first_name, last_name, birthdate, phone, reg_date)
+            VALUES (%s, %s, %s, %s, %s, CURDATE())
+            """
+            cursor.execute(sql, (user_id, first_name, last_name, birthdate, phone))
+            conn.commit()
+            return True
     except Exception as e:
         logger.error(f"Ошибка при регистрации пользователя: {e}")
         return False
+    finally:
+        conn.close()
 
 def get_active_clubs():
+    conn = get_db_connection()
+    if not conn:
+        return []
+    
     try:
-        query = "SELECT * FROM Clubs WHERE active = TRUE"
-        return db_manager.execute_query(query, fetch_all=True) or []
+        with conn.cursor() as cursor:
+            sql = "SELECT * FROM Clubs WHERE active = TRUE"
+            cursor.execute(sql)
+            return cursor.fetchall()
     except Exception as e:
         logger.error(f"Ошибка при получении активных кружков: {e}")
         return []
+    finally:
+        conn.close()
 
 def get_club_dates(club_id):
+    conn = get_db_connection()
+    if not conn:
+        return []
+    
     try:
-        query = """
-        SELECT 
-            schedule_id, 
-            date, 
-            DAYNAME(date) as day_of_week, 
-            start_time, 
-            end_time 
-        FROM Club_Schedule 
-        WHERE club_id = %s AND date >= CURDATE()
-        ORDER BY date
-        """
-        schedules = db_manager.execute_query(query, (club_id,), fetch_all=True) or []
-        dates = []
-        for s in schedules:
-            date_str = s['date'].strftime('%d.%m.%Y')
-            dates.append({
-                'date': date_str,
-                'display': f"{date_str} ({s['day_of_week']})",
-                'schedule_id': s['schedule_id']
-            })
-        return dates
+        with conn.cursor() as cursor:
+            sql = """
+            SELECT 
+                schedule_id, 
+                club_id, 
+                date, 
+                day_of_week, 
+                start_time, 
+                end_time 
+            FROM Club_Schedule 
+            WHERE club_id = %s AND date >= CURDATE()
+            ORDER BY date
+            """
+            cursor.execute(sql, (club_id,))
+            schedules = cursor.fetchall()
+            
+            dates = []
+            for s in schedules:
+                date_str = s['date'].strftime('%d.%m.%Y')
+                dates.append({
+                    'date': date_str,
+                    'display': f"{date_str} ({s.get('day_of_week', '')})",
+                    'schedule_id': s['schedule_id']
+                })
+            return dates
     except Exception as e:
         logger.error(f"Ошибка при получении дат кружка: {e}")
         return []
+    finally:
+        conn.close()
 
 def get_schedule_times(schedule_id):
-    try:
-        query = """
-        SELECT 
-            TIME_FORMAT(start_time, '%H:%i') as start_time,
-            TIME_FORMAT(end_time, '%H:%i') as end_time
-        FROM Club_Schedule
-        WHERE schedule_id = %s
-        """
-        schedule = db_manager.execute_query(query, (schedule_id,), fetch_one=True)
-        if schedule:
-            return [f"{schedule['start_time']}-{schedule['end_time']}"]
+    conn = get_db_connection()
+    if not conn:
         return []
+    
+    try:
+        with conn.cursor() as cursor:
+            sql = """
+            SELECT 
+                start_time, 
+                end_time 
+            FROM Club_Schedule 
+            WHERE schedule_id = %s
+            """
+            cursor.execute(sql, (schedule_id,))
+            schedule = cursor.fetchone()
+            
+            if schedule:
+                start = schedule['start_time'].strftime('%H:%M')
+                end = schedule['end_time'].strftime('%H:%M')
+                return [f"{start}-{end}"]
+            return []
     except Exception as e:
         logger.error(f"Ошибка при получении времени занятий: {e}")
         return []
+    finally:
+        conn.close()
 
 def get_active_events():
+    conn = get_db_connection()
+    if not conn:
+        return []
+    
     try:
-        query = "SELECT * FROM Events WHERE active = TRUE AND date >= CURDATE()"
-        return db_manager.execute_query(query, fetch_all=True) or []
+        with conn.cursor() as cursor:
+            sql = """
+            SELECT 
+                event_id,
+                name,
+                description,
+                date,
+                time,
+                location,
+                max_participants,
+                current_participants
+            FROM Events 
+            WHERE active = TRUE AND date >= CURDATE()
+            ORDER BY date, time
+            """
+            cursor.execute(sql)
+            return cursor.fetchall()
     except Exception as e:
         logger.error(f"Ошибка при получении активных мероприятий: {e}")
         return []
+    finally:
+        conn.close()
 
 def get_faq_categories():
+    conn = get_db_connection()
+    if not conn:
+        return []
+    
     try:
-        query = "SELECT DISTINCT category FROM FAQ"
-        faqs = db_manager.execute_query(query, fetch_all=True) or []
-        return [faq['category'] for faq in faqs if faq.get('category')]
+        with conn.cursor() as cursor:
+            sql = "SELECT DISTINCT category FROM FAQ"
+            cursor.execute(sql)
+            categories = cursor.fetchall()
+            return [c['category'] for c in categories] if categories else []
     except Exception as e:
         logger.error(f"Ошибка при получении категорий FAQ: {e}")
         return []
+    finally:
+        conn.close()
 
 def get_faq_by_category(category):
+    conn = get_db_connection()
+    if not conn:
+        return []
+    
     try:
-        query = "SELECT question, answer FROM FAQ WHERE category = %s"
-        return db_manager.execute_query(query, (category,), fetch_all=True) or []
+        with conn.cursor() as cursor:
+            sql = "SELECT question, answer FROM FAQ WHERE category = %s"
+            cursor.execute(sql, (category,))
+            return cursor.fetchall()
     except Exception as e:
         logger.error(f"Ошибка при получении FAQ по категории: {e}")
         return []
+    finally:
+        conn.close()
 
 def register_for_club(user_id, club_id, schedule_id):
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
     try:
-        # Проверяем, есть ли уже запись
-        check_query = """
-        SELECT 1 FROM Registrations 
-        WHERE user_id = %s AND type = 'club' AND item_id = %s AND status = 'active'
-        """
-        existing = db_manager.execute_query(check_query, (user_id, club_id), fetch_one=True)
-        if existing:
-            return False  # Уже записан
-        
-        # Добавляем запись о регистрации
-        reg_query = """
-        INSERT INTO Registrations 
-        (user_id, type, item_id, date, time, status) 
-        VALUES (%s, 'club', %s, CURDATE(), CURTIME(), 'active')
-        """
-        db_manager.execute_query(reg_query, (user_id, club_id), commit=True)
-        
-        # Обновляем количество участников
-        update_query = """
-        UPDATE Club_Schedule 
-        SET current_participants = current_participants + 1 
-        WHERE schedule_id = %s
-        """
-        db_manager.execute_query(update_query, (schedule_id,), commit=True)
-        
-        return True
+        with conn.cursor() as cursor:
+            # Добавляем запись о регистрации
+            sql = """
+            INSERT INTO Registrations (
+                user_id, 
+                type, 
+                item_id, 
+                date, 
+                time, 
+                status
+            ) VALUES (%s, 'club', %s, CURDATE(), CURTIME(), 'active')
+            """
+            cursor.execute(sql, (user_id, club_id))
+            
+            # Обновляем количество участников
+            sql = """
+            UPDATE Club_Schedule 
+            SET current_participants = current_participants + 1 
+            WHERE schedule_id = %s
+            """
+            cursor.execute(sql, (schedule_id,))
+            
+            conn.commit()
+            return True
     except Exception as e:
         logger.error(f"Ошибка при регистрации на кружок: {e}")
         return False
+    finally:
+        conn.close()
 
 def register_for_event(user_id, event_id):
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
     try:
-        # Проверяем, есть ли уже запись
-        check_query = """
-        SELECT 1 FROM Registrations 
-        WHERE user_id = %s AND type = 'event' AND item_id = %s AND status = 'active'
-        """
-        existing = db_manager.execute_query(check_query, (user_id, event_id), fetch_one=True)
-        if existing:
-            return False  # Уже записан
-        
-        # Добавляем запись о регистрации
-        reg_query = """
-        INSERT INTO Registrations 
-        (user_id, type, item_id, date, time, status) 
-        VALUES (%s, 'event', %s, CURDATE(), CURTIME(), 'active')
-        """
-        db_manager.execute_query(reg_query, (user_id, event_id), commit=True)
-        
-        # Обновляем количество участников мероприятия
-        update_query = """
-        UPDATE Events 
-        SET current_participants = current_participants + 1 
-        WHERE event_id = %s
-        """
-        db_manager.execute_query(update_query, (event_id,), commit=True)
-        
-        return True
+        with conn.cursor() as cursor:
+            # Добавляем запись о регистрации
+            sql = """
+            INSERT INTO Registrations (
+                user_id, 
+                type, 
+                item_id, 
+                date, 
+                time, 
+                status
+            ) VALUES (%s, 'event', %s, CURDATE(), CURTIME(), 'active')
+            """
+            cursor.execute(sql, (user_id, event_id))
+            
+            # Обновляем количество участников мероприятия
+            sql = """
+            UPDATE Events 
+            SET current_participants = current_participants + 1 
+            WHERE event_id = %s
+            """
+            cursor.execute(sql, (event_id,))
+            
+            conn.commit()
+            return True
     except Exception as e:
         logger.error(f"Ошибка при регистрации на мероприятие: {e}")
         return False
+    finally:
+        conn.close()
 
 def get_user_registrations(user_id):
-    try:
-        # Получаем записи на кружки
-        clubs_query = """
-        SELECT c.name 
-        FROM Registrations r
-        JOIN Clubs c ON r.item_id = c.club_id
-        WHERE r.user_id = %s AND r.type = 'club' AND r.status = 'active'
-        """
-        club_regs = db_manager.execute_query(clubs_query, (user_id,), fetch_all=True) or []
-        
-        # Получаем записи на мероприятия
-        events_query = """
-        SELECT e.name, e.date 
-        FROM Registrations r
-        JOIN Events e ON r.item_id = e.event_id
-        WHERE r.user_id = %s AND r.type = 'event' AND r.status = 'active'
-        """
-        event_regs = db_manager.execute_query(events_query, (user_id,), fetch_all=True) or []
-        
-        # Форматируем результаты
-        club_names = [reg['name'] for reg in club_regs]
-        event_names = [
-            f"{reg['name']} ({reg['date'].strftime('%d.%m.%Y')})"
-            for reg in event_regs
-        ]
-        
+    conn = get_db_connection()
+    if not conn:
         return {
-            'clubs': ', '.join(club_names) if club_names else 'Нет записей',
-            'events': ', '.join(event_names) if event_names else 'Нет записей'
+            'clubs': 'Ошибка при получении данных',
+            'events': 'Ошибка при получении данных'
         }
+    
+    try:
+        with conn.cursor() as cursor:
+            # Получаем записи на кружки
+            sql = """
+            SELECT c.name 
+            FROM Registrations r
+            JOIN Clubs c ON r.item_id = c.club_id
+            WHERE r.user_id = %s AND r.type = 'club' AND r.status = 'active'
+            """
+            cursor.execute(sql, (user_id,))
+            club_regs = [r['name'] for r in cursor.fetchall()]
+            
+            # Получаем записи на мероприятия
+            sql = """
+            SELECT e.name, e.date 
+            FROM Registrations r
+            JOIN Events e ON r.item_id = e.event_id
+            WHERE r.user_id = %s AND r.type = 'event' AND r.status = 'active'
+            """
+            cursor.execute(sql, (user_id,))
+            event_regs = [
+                f"{r['name']} ({r['date'].strftime('%d.%m.%Y')})" 
+                for r in cursor.fetchall()
+            ]
+            
+            return {
+                'clubs': ', '.join(club_regs) if club_regs else 'Нет записей',
+                'events': ', '.join(event_regs) if event_regs else 'Нет записей'
+            }
     except Exception as e:
         logger.error(f"Ошибка при получении регистраций пользователя: {e}")
         return {
             'clubs': 'Ошибка при получении данных',
             'events': 'Ошибка при получении данных'
         }
+    finally:
+        conn.close()
 
 @app.route('/callback', methods=['POST'])
 def callback():
@@ -646,31 +708,33 @@ def callback():
             elif message == "Информация":
                 if is_user_registered(user_id):
                     try:
-                        query = """
-                        SELECT first_name, last_name, birthdate, phone 
-                        FROM Users 
-                        WHERE user_id = %s
-                        """
-                        user = db_manager.execute_query(query, (user_id,), fetch_one=True)
-                        if user:
-                            response = (
-                                f"Ваши данные:\n"
-                                f"Имя: {user.get('first_name', 'не указано')}\n"
-                                f"Фамилия: {user.get('last_name', 'не указана')}\n"
-                                f"Дата рождения: {user['birthdate'].strftime('%d.%m.%Y') if user.get('birthdate') else 'не указана'}\n"
-                                f"Телефон: {user.get('phone', 'не указан')}"
-                            )
-                            send_message(
-                                user_id, 
-                                response, 
-                                get_keyboard("edit_info", user_id)
-                            )
-                        else:
-                            send_message(
-                                user_id, 
-                                "Ваши данные не найдены", 
-                                get_keyboard("personal_account", user_id)
-                            )
+                        conn = get_db_connection()
+                        if conn:
+                            with conn.cursor() as cursor:
+                                sql = "SELECT * FROM Users WHERE user_id = %s"
+                                cursor.execute(sql, (user_id,))
+                                user = cursor.fetchone()
+                                
+                                if user:
+                                    response = (
+                                        f"Ваши данные:\n"
+                                        f"Имя: {user.get('first_name', 'не указано')}\n"
+                                        f"Фамилия: {user.get('last_name', 'не указана')}\n"
+                                        f"Дата рождения: {user.get('birthdate', 'не указана')}\n"
+                                        f"Телефон: {user.get('phone', 'не указан')}"
+                                    )
+                                    send_message(
+                                        user_id, 
+                                        response, 
+                                        get_keyboard("edit_info", user_id)
+                                    )
+                                else:
+                                    send_message(
+                                        user_id, 
+                                        "Ваши данные не найдены", 
+                                        get_keyboard("personal_account", user_id)
+                                    )
+                            conn.close()
                     except Exception as e:
                         logger.error(f"Ошибка при получении информации пользователя: {e}")
                         send_message(
@@ -762,8 +826,8 @@ def callback():
                     }
                     response = (
                         f"{event['name']}\n"
-                        f"Дата: {event['date'].strftime('%d.%m.%Y') if event.get('date') else 'не указана'}\n"
-                        f"Время: {event['time'].strftime('%H:%M') if event.get('time') else 'не указано'}\n"
+                        f"Дата: {event.get('date', 'не указана')}\n"
+                        f"Время: {event.get('time', 'не указано')}\n"
                         f"Место: {event.get('location', 'не указано')}\n"
                         f"Описание: {event.get('description', 'отсутствует')}\n"
                         f"Подтвердите запись:"

@@ -1,8 +1,5 @@
 flask
 gunicorn
 vk_api
-pymysql
-gspread
-google-auth
-google-auth-oautholib
-google-auth-httplib2
+mysql-connector-python
+python-dotenv

@@ -1,3 +1,4 @@
 flask
 gunicorn
 vk_api
+mysql-connector-python

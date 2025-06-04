@@ -14,9 +14,10 @@ def get_db():
     try:
         return mysql.connector.connect(
             host="mysql-ostrova.alwaysdata.net",
-            user="ostrova",  #ЮЗЕРА ПОСТАВИТЬЬ КАК НА ALWAYS
+            port=3306,  # Стандартный MySQL
+            user="ostrova",  
             password="ZVD-5rM-5Ru-UDW",  
-            database="ostrova_ostrova_base"  #НАЗВАНИЕ БД ПОСТАВИТЬЬ КАК НА ALWAYS
+            database="ostrova_base"  
         )
     except Exception as e:
         print("Ошибка подключения к БД:", e)

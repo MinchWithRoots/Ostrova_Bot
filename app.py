@@ -1,14 +1,14 @@
 from flask import Flask, request
 import json
-import random
 import vk_api
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
-from datetime import datetime
+import random
+import os
 import pymysql
 from pymysql.cursors import DictCursor
-import os
-import logging
 from dotenv import load_dotenv
+import logging
+from datetime import datetime
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -25,10 +25,11 @@ app = Flask(__name__)
 # Конфигурация из .env
 VK_TOKEN = os.getenv('VK_TOKEN')
 CONFIRMATION_TOKEN = os.getenv('CONFIRMATION_TOKEN')
-DB_HOST = os.getenv('DB_HOST')  # Убедись, что нет https://
-DB_USER = os.getenv('DB_USER')
+
+DB_HOST = os.getenv('DB_HOST')  # mysql-ostrova.alwaysdata.net
+DB_USER = os.getenv('DB_USER')  # ostrova
 DB_PASSWORD = os.getenv('DB_PASSWORD')
-DB_NAME = os.getenv('DB_NAME')
+DB_NAME = os.getenv('DB_NAME')  # ostrova_base
 
 # Инициализация VK API
 vk_session = vk_api.VkApi(token=VK_TOKEN)
@@ -159,11 +160,9 @@ def get_keyboard(name, user_id=None):
     elif name == "club_dates":
         club_id = user_state[user_id]['club_id']
         dates = get_club_dates(club_id)
-        for i, date in enumerate(dates):
-            if i > 0 and i % 2 == 0:
-                kb.add_line()
-            kb.add_button(date['display'])
-        kb.add_line()
+        for date_info in dates:
+            kb.add_button(date_info['display'])
+            kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
     elif name == "club_times":
         schedule_id = user_state[user_id]['schedule_id']
@@ -273,97 +272,6 @@ def get_faq_by_category(category):
         logger.error(f"Ошибка при получении FAQ по категории: {e}")
         return []
 
-def register_for_club(user_id, club_id, schedule_id):
-    try:
-        check_query = """
-        SELECT 1 FROM Registrations 
-        WHERE user_id = %s AND type = 'club' AND item_id = %s AND status = 'active'
-        """
-        existing = db_manager.execute_query(check_query, (user_id, club_id), fetch_one=True)
-        if existing:
-            return False  # Уже записан
-
-        reg_query = """
-        INSERT INTO Registrations 
-        (user_id, type, item_id, date, time, status) 
-        VALUES (%s, 'club', %s, CURDATE(), CURTIME(), 'active')
-        """
-        db_manager.execute_query(reg_query, (user_id, club_id), commit=True)
-
-        update_query = """
-        UPDATE Club_Schedule 
-        SET current_participants = current_participants + 1 
-        WHERE schedule_id = %s
-        """
-        db_manager.execute_query(update_query, (schedule_id,), commit=True)
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка при регистрации на кружок: {e}")
-        return False
-
-def register_for_event(user_id, event_id):
-    try:
-        check_query = """
-        SELECT 1 FROM Registrations 
-        WHERE user_id = %s AND type = 'event' AND item_id = %s AND status = 'active'
-        """
-        existing = db_manager.execute_query(check_query, (user_id, event_id), fetch_one=True)
-        if existing:
-            return False  # Уже записан
-
-        reg_query = """
-        INSERT INTO Registrations 
-        (user_id, type, item_id, date, time, status) 
-        VALUES (%s, 'event', %s, CURDATE(), CURTIME(), 'active')
-        """
-        db_manager.execute_query(reg_query, (user_id, event_id), commit=True)
-
-        update_query = """
-        UPDATE Events 
-        SET current_participants = current_participants + 1 
-        WHERE event_id = %s
-        """
-        db_manager.execute_query(update_query, (event_id,), commit=True)
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка при регистрации на мероприятие: {e}")
-        return False
-
-def get_user_registrations(user_id):
-    try:
-        clubs_query = """
-        SELECT c.name 
-        FROM Registrations r
-        JOIN Clubs c ON r.item_id = c.club_id
-        WHERE r.user_id = %s AND r.type = 'club' AND r.status = 'active'
-        """
-        club_regs = db_manager.execute_query(clubs_query, (user_id,), fetch_all=True) or []
-
-        events_query = """
-        SELECT e.name, e.date 
-        FROM Registrations r
-        JOIN Events e ON r.item_id = e.event_id
-        WHERE r.user_id = %s AND r.type = 'event' AND r.status = 'active'
-        """
-        event_regs = db_manager.execute_query(events_query, (user_id,), fetch_all=True) or []
-
-        club_names = [reg['name'] for reg in club_regs]
-        event_names = [
-            f"{reg['name']} ({reg['date'].strftime('%d.%m.%Y')})"
-            for reg in event_regs
-        ]
-
-        return {
-            'clubs': ', '.join(club_names) if club_names else 'Нет записей',
-            'events': ', '.join(event_names) if event_names else 'Нет записей'
-        }
-    except Exception as e:
-        logger.error(f"Ошибка при получении регистраций пользователя: {e}")
-        return {
-            'clubs': 'Ошибка при получении данных',
-            'events': 'Ошибка при получении данных'
-        }
-
 @app.route('/callback', methods=['POST', 'GET'])
 def callback():
     data = request.get_json()
@@ -416,7 +324,7 @@ def callback():
                 if register_user(
                     user_id,
                     user_data_cache[user_id]['first_name'],
-                    user_data_cache[user_id]['last_name'],
+                    user_data_cache[user_id]['first_name'],
                     user_data_cache[user_id]['birthdate'],
                     user_data_cache[user_id]['phone']
                 ):
@@ -457,13 +365,6 @@ def callback():
                     "У вас отсутствует личный кабинет! Зарегистрируйте его!", 
                     get_keyboard("personal_account", user_id)
                 )
-        elif message == "Зарегистрироваться":
-            user_state[user_id] = {'state': 'waiting_for_name'}
-            send_message(
-                user_id, 
-                "Прежде чем производить запись на кружок или мероприятие давайте зарегистрируемся! Ваши фамилия и имя(через пробел)?", 
-                get_keyboard("get_name", user_id)
-            )
 
         return 'ok', 200
 

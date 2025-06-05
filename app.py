@@ -3,39 +3,120 @@ import json
 import random
 import vk_api
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
+from datetime import datetime
+import pymysql
+from pymysql.cursors import DictCursor
+import os
+import logging
+from dotenv import load_dotenv
+
+# Загрузка переменных окружения
+load_dotenv()
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-confirmation_token = 'c9d9ac77'
-token = 'vk1.a.69EGRWB1sbkT5O5nNF5WLcI9rsjx9_gDHPEcWWAQvL26fMZVkzKmoHM4fBNQMGjLhkQDAD-0NU16OALmxM_HmsyF0gDykLWuIjU1YV5ZlyWqQZD_r_8qTKp8NYsH8-04_9d9q1UA6IvBbj4_qd8a5o_F4Fr75eSGKWyw0x1kt1XfhW_W3GEaEC_u2Nt2lcH7kv7qo8wdQatf6BzohS5asA'
+# Конфигурация из .env
+VK_TOKEN = os.getenv('VK_TOKEN')
+CONFIRMATION_TOKEN = os.getenv('CONFIRMATION_TOKEN')
+DB_HOST = os.getenv('DB_HOST')  # Убедись, что нет https://
+DB_USER = os.getenv('DB_USER')
+DB_PASSWORD = os.getenv('DB_PASSWORD')
+DB_NAME = os.getenv('DB_NAME')
 
-
-vk_session = vk_api.VkApi(token=token)
+# Инициализация VK API
+vk_session = vk_api.VkApi(token=VK_TOKEN)
 vk = vk_session.get_api()
 
-from datetime import datetime
-
-# Глобальные словари для хранения данных пользователей и состояний
+# Глобальные словари для состояний пользователей
 user_state = {}
-user_data = {}
-user_registrations = {}
+user_data_cache = {}
 
+class DatabaseManager:
+    def __init__(self):
+        self.connection = None
+        self.connect()
+
+    def connect(self, retries=3, delay=5):
+        for attempt in range(retries):
+            try:
+                self.connection = pymysql.connect(
+                    host=DB_HOST,
+                    user=DB_USER,
+                    password=DB_PASSWORD,
+                    database=DB_NAME,
+                    cursorclass=DictCursor
+                )
+                logger.info("Успешное подключение к базе данных")
+                return True
+            except Exception as e:
+                logger.error(f"Ошибка подключения к базе данных (попытка {attempt + 1}): {e}")
+                if attempt < retries - 1:
+                    time.sleep(delay)
+        return False
+
+    def execute_query(self, query, params=None, fetch_one=False, fetch_all=False, commit=False):
+        try:
+            with self.connection.cursor() as cursor:
+                cursor.execute(query, params or ())
+                if commit:
+                    self.connection.commit()
+                if fetch_one:
+                    return cursor.fetchone()
+                if fetch_all:
+                    return cursor.fetchall()
+                return None
+        except Exception as e:
+            logger.error(f"Ошибка выполнения запроса: {e}")
+            self.connection.rollback()
+            raise
+
+    def close(self):
+        if self.connection:
+            self.connection.close()
+
+# Инициализация менеджера БД
+db_manager = DatabaseManager()
+
+def is_user_registered(user_id):
+    try:
+        query = "SELECT 1 FROM Users WHERE user_id = %s"
+        result = db_manager.execute_query(query, (user_id,), fetch_one=True)
+        return result is not None
+    except Exception as e:
+        logger.error(f"Ошибка при проверке регистрации пользователя: {e}")
+        return False
+
+def register_user(user_id, first_name, last_name, birthdate, phone):
+    try:
+        query = """
+        INSERT INTO Users (user_id, first_name, last_name, birthdate, phone, reg_date)
+        VALUES (%s, %s, %s, %s, %s, CURDATE())
+        """
+        db_manager.execute_query(query, (user_id, first_name, last_name, birthdate, phone), commit=True)
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при регистрации пользователя: {e}")
+        return False
 
 def get_keyboard(name, user_id=None):
     kb = VkKeyboard(one_time=False)
-
     if name == "null":
         kb.add_button('На главную', color=VkKeyboardColor.PRIMARY)
-
     elif name == "main":
         kb.add_button('Личный кабинет')
         kb.add_line()
         kb.add_button('Кружки и Мероприятия')
         kb.add_line()
         kb.add_button('Вопросы')
-
     elif name == "personal_account":
-        if user_id in user_data:
+        if is_user_registered(user_id):
             kb.add_button('Информация')
             kb.add_line()
             kb.add_button('Мои записи')
@@ -45,7 +126,6 @@ def get_keyboard(name, user_id=None):
             kb.add_button('Зарегистрироваться')
             kb.add_line()
             kb.add_button('На главную', color=VkKeyboardColor.PRIMARY)
-
     elif name == "edit_info":
         kb.add_button('Имя и Фамилия')
         kb.add_line()
@@ -54,264 +134,349 @@ def get_keyboard(name, user_id=None):
         kb.add_button('Номер телефона')
         kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
-
     elif name == "get_name":
         kb.add_button('Взять с профиля', color=VkKeyboardColor.POSITIVE)
         kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
-
     elif name == "get_birthdate":
         kb.add_button('Взять с профиля', color=VkKeyboardColor.POSITIVE)
         kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
-
     elif name == "activities":
         kb.add_button('Кружок')
         kb.add_line()
         kb.add_button('Мероприятие')
         kb.add_line()
         kb.add_button('На главную', color=VkKeyboardColor.PRIMARY)
-
     elif name == "clubs":
-        # Заглушка - в реальности брать из БД
-        kb.add_button('Программирование')
-        kb.add_line()
-        kb.add_button('Дизайн')
+        clubs = get_active_clubs()
+        for i, club in enumerate(clubs):
+            if i > 0 and i % 2 == 0:
+                kb.add_line()
+            kb.add_button(club['name'])
         kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
-
     elif name == "club_dates":
-        # Заглушка - в реальности брать из БД
-        kb.add_button('15.05.2023 (пн)')
-        kb.add_line()
-        kb.add_button('17.05.2023 (ср)')
+        club_id = user_state[user_id]['club_id']
+        dates = get_club_dates(club_id)
+        for i, date in enumerate(dates):
+            if i > 0 and i % 2 == 0:
+                kb.add_line()
+            kb.add_button(date['display'])
         kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
-
     elif name == "club_times":
-        # Заглушка - в реальности брать из БД
-        kb.add_button('15:00')
-        kb.add_line()
-        kb.add_button('17:00')
-        kb.add_line()
+        schedule_id = user_state[user_id]['schedule_id']
+        times = get_schedule_times(schedule_id)
+        for time_str in times:
+            kb.add_button(time_str)
+            kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
-
     elif name == "confirm_registration":
         kb.add_button('Подтверждаю', color=VkKeyboardColor.POSITIVE)
         kb.add_line()
         kb.add_button('Не подтверждаю', color=VkKeyboardColor.NEGATIVE)
-
     elif name == "events":
-        # Заглушка - в реальности проверять наличие мероприятий в БД
-        kb.add_button('Концерт')
-        kb.add_line()
-        kb.add_button('Мастер-класс')
-        kb.add_line()
+        events = get_active_events()
+        for event in events:
+            kb.add_button(event['name'])
+            kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
-
     elif name == "questions":
         kb.add_button('Часто задаваемые вопросы')
         kb.add_line()
         kb.add_button('Свой вопрос')
         kb.add_line()
         kb.add_button('На главную', color=VkKeyboardColor.PRIMARY)
-
     elif name == "faq":
-        # Заглушка - в реальности брать из БД
-        kb.add_button('Как записаться?')
-        kb.add_line()
-        kb.add_button('Где проходят занятия?')
-        kb.add_line()
+        categories = get_faq_categories()
+        for category in categories:
+            kb.add_button(category)
+            kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
-
     return kb
+
+def get_active_clubs():
+    try:
+        query = "SELECT * FROM Clubs WHERE active = TRUE"
+        return db_manager.execute_query(query, fetch_all=True) or []
+    except Exception as e:
+        logger.error(f"Ошибка при получении активных кружков: {e}")
+        return []
+
+def get_club_dates(club_id):
+    try:
+        query = """
+        SELECT 
+            schedule_id, 
+            date, 
+            DAYNAME(date) as day_of_week, 
+            start_time, 
+            end_time 
+        FROM Club_Schedule 
+        WHERE club_id = %s AND date >= CURDATE()
+        ORDER BY date
+        """
+        schedules = db_manager.execute_query(query, (club_id,), fetch_all=True) or []
+        dates = []
+        for s in schedules:
+            date_str = s['date'].strftime('%d.%m.%Y')
+            dates.append({
+                'date': date_str,
+                'display': f"{date_str} ({s['day_of_week']})",
+                'schedule_id': s['schedule_id']
+            })
+        return dates
+    except Exception as e:
+        logger.error(f"Ошибка при получении дат кружка: {e}")
+        return []
+
+def get_schedule_times(schedule_id):
+    try:
+        query = """
+        SELECT 
+            TIME_FORMAT(start_time, '%H:%i') as start_time,
+            TIME_FORMAT(end_time, '%H:%i') as end_time
+        FROM Club_Schedule
+        WHERE schedule_id = %s
+        """
+        schedule = db_manager.execute_query(query, (schedule_id,), fetch_one=True)
+        if schedule:
+            return [f"{schedule['start_time']}-{schedule['end_time']}"]
+        return []
+    except Exception as e:
+        logger.error(f"Ошибка при получении времени занятий: {e}")
+        return []
+
+def get_active_events():
+    try:
+        query = "SELECT * FROM Events WHERE active = TRUE AND date >= CURDATE()"
+        return db_manager.execute_query(query, fetch_all=True) or []
+    except Exception as e:
+        logger.error(f"Ошибка при получении активных мероприятий: {e}")
+        return []
+
+def get_faq_categories():
+    try:
+        query = "SELECT DISTINCT category FROM FAQ"
+        faqs = db_manager.execute_query(query, fetch_all=True) or []
+        return [faq['category'] for faq in faqs if faq.get('category')]
+    except Exception as e:
+        logger.error(f"Ошибка при получении категорий FAQ: {e}")
+        return []
+
+def get_faq_by_category(category):
+    try:
+        query = "SELECT question, answer FROM FAQ WHERE category = %s"
+        return db_manager.execute_query(query, (category,), fetch_all=True) or []
+    except Exception as e:
+        logger.error(f"Ошибка при получении FAQ по категории: {e}")
+        return []
+
+def register_for_club(user_id, club_id, schedule_id):
+    try:
+        check_query = """
+        SELECT 1 FROM Registrations 
+        WHERE user_id = %s AND type = 'club' AND item_id = %s AND status = 'active'
+        """
+        existing = db_manager.execute_query(check_query, (user_id, club_id), fetch_one=True)
+        if existing:
+            return False  # Уже записан
+
+        reg_query = """
+        INSERT INTO Registrations 
+        (user_id, type, item_id, date, time, status) 
+        VALUES (%s, 'club', %s, CURDATE(), CURTIME(), 'active')
+        """
+        db_manager.execute_query(reg_query, (user_id, club_id), commit=True)
+
+        update_query = """
+        UPDATE Club_Schedule 
+        SET current_participants = current_participants + 1 
+        WHERE schedule_id = %s
+        """
+        db_manager.execute_query(update_query, (schedule_id,), commit=True)
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при регистрации на кружок: {e}")
+        return False
+
+def register_for_event(user_id, event_id):
+    try:
+        check_query = """
+        SELECT 1 FROM Registrations 
+        WHERE user_id = %s AND type = 'event' AND item_id = %s AND status = 'active'
+        """
+        existing = db_manager.execute_query(check_query, (user_id, event_id), fetch_one=True)
+        if existing:
+            return False  # Уже записан
+
+        reg_query = """
+        INSERT INTO Registrations 
+        (user_id, type, item_id, date, time, status) 
+        VALUES (%s, 'event', %s, CURDATE(), CURTIME(), 'active')
+        """
+        db_manager.execute_query(reg_query, (user_id, event_id), commit=True)
+
+        update_query = """
+        UPDATE Events 
+        SET current_participants = current_participants + 1 
+        WHERE event_id = %s
+        """
+        db_manager.execute_query(update_query, (event_id,), commit=True)
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при регистрации на мероприятие: {e}")
+        return False
+
+def get_user_registrations(user_id):
+    try:
+        clubs_query = """
+        SELECT c.name 
+        FROM Registrations r
+        JOIN Clubs c ON r.item_id = c.club_id
+        WHERE r.user_id = %s AND r.type = 'club' AND r.status = 'active'
+        """
+        club_regs = db_manager.execute_query(clubs_query, (user_id,), fetch_all=True) or []
+
+        events_query = """
+        SELECT e.name, e.date 
+        FROM Registrations r
+        JOIN Events e ON r.item_id = e.event_id
+        WHERE r.user_id = %s AND r.type = 'event' AND r.status = 'active'
+        """
+        event_regs = db_manager.execute_query(events_query, (user_id,), fetch_all=True) or []
+
+        club_names = [reg['name'] for reg in club_regs]
+        event_names = [
+            f"{reg['name']} ({reg['date'].strftime('%d.%m.%Y')})"
+            for reg in event_regs
+        ]
+
+        return {
+            'clubs': ', '.join(club_names) if club_names else 'Нет записей',
+            'events': ', '.join(event_names) if event_names else 'Нет записей'
+        }
+    except Exception as e:
+        logger.error(f"Ошибка при получении регистраций пользователя: {e}")
+        return {
+            'clubs': 'Ошибка при получении данных',
+            'events': 'Ошибка при получении данных'
+        }
 
 @app.route('/callback', methods=['POST', 'GET'])
 def callback():
-    data = json.loads(request.data)
-
+    data = request.get_json()
     if request.method == 'GET':
         return 'I am alive!', 200
-
     if 'type' not in data:
-        return 'not vk'
-
+        return 'not vk', 200
     if data['type'] == 'confirmation':
-        return confirmation_token
-
+        return CONFIRMATION_TOKEN, 200
     elif data['type'] == 'message_new':
         message = data['object']['message']['text']
         user_id = data['object']['message']['from_id']
+        logger.info(f"Получено сообщение от {user_id}: {message}")
 
         # Обработка состояний пользователя
         if user_id in user_state:
-            state = user_state[user_id]
-            
-            if state['state'] == 'waiting_for_name':
+            state = user_state[user_id]['state']
+            if state == 'waiting_for_name':
                 names = message.split()
                 if len(names) >= 2:
-                    user_data[user_id] = {
-                        'first_name': names[1],
-                        'last_name': names[0],
+                    user_data_cache[user_id] = {
+                        'first_name': names[0],
+                        'last_name': ' '.join(names[1:]),
                         'birthdate': None,
                         'phone': None
                     }
                     user_state[user_id] = {'state': 'waiting_for_birthdate'}
-                    send_message(user_id, "Ваша дата рождения? (формат: ДД.ММ.ГГГГ)", get_keyboard("get_birthdate", user_id))
+                    send_message(
+                        user_id, 
+                        "Ваша дата рождения? (формат: ДД.ММ.ГГГГ)", 
+                        get_keyboard("get_birthdate", user_id)
+                    )
                 else:
-                    send_message(user_id, "Пожалуйста, введите имя и фамилию через пробел (например: Иванов Иван)")
-                return 'ok'
-            
-            elif state['state'] == 'waiting_for_birthdate':
+                    send_message(
+                        user_id, 
+                        "Пожалуйста, введите имя и фамилию через пробел (например: Иван Иванов)"
+                    )
+                return 'ok', 200
+            elif state == 'waiting_for_birthdate':
                 try:
                     datetime.strptime(message, '%d.%m.%Y')
-                    user_data[user_id]['birthdate'] = message
+                    user_data_cache[user_id]['birthdate'] = message
                     user_state[user_id] = {'state': 'waiting_for_phone'}
                     send_message(user_id, "Ваш номер телефона?", get_keyboard("null"))
                 except ValueError:
                     send_message(user_id, "Пожалуйста, введите дату в формате ДД.ММ.ГГГГ")
-                return 'ok'
-            
-            elif state['state'] == 'waiting_for_phone':
-                user_data[user_id]['phone'] = message
+                return 'ok', 200
+            elif state == 'waiting_for_phone':
+                user_data_cache[user_id]['phone'] = message
+                if register_user(
+                    user_id,
+                    user_data_cache[user_id]['first_name'],
+                    user_data_cache[user_id]['last_name'],
+                    user_data_cache[user_id]['birthdate'],
+                    user_data_cache[user_id]['phone']
+                ):
+                    send_message(user_id, "Спасибо за регистрацию!", get_keyboard("main"))
+                else:
+                    send_message(
+                        user_id, 
+                        "Произошла ошибка при регистрации. Пожалуйста, попробуйте позже.", 
+                        get_keyboard("main")
+                    )
                 del user_state[user_id]
-                send_message(user_id, "Спасибо за регистрацию!", get_keyboard("main"))
-                return 'ok'
-            
-            elif state['state'] == 'waiting_for_question':
-                send_message(user_id, "Подождите, скоро оператор свяжется с вами!", get_keyboard("null"))
-                del user_state[user_id]
-                return 'ok'
+                del user_data_cache[user_id]
+                return 'ok', 200
 
-        # Обработка основных команд
+        # Основные команды
         if message == "Начать":
-            send_message(user_id, "Приветствуем тебя в молодежном клубе «Острова». Мы – часть большой семьи молодежного центра «Охта».", get_keyboard("main"))
-        
+            send_message(
+                user_id, 
+                "Приветствуем тебя в молодежном клубе «Острова». Мы – часть большой семьи молодежного центра «Охта».", 
+                get_keyboard("main")
+            )
         elif message == "На главную":
-            send_message(user_id, "Вот меню для получения информации:", get_keyboard("main"))
-        
+            send_message(
+                user_id, 
+                "Вот меню для получения информации:", 
+                get_keyboard("main")
+            )
         elif message == "Личный кабинет":
-            if user_id in user_data:
-                send_message(user_id, "Выберите действие", get_keyboard("personal_account", user_id))
+            if is_user_registered(user_id):
+                send_message(
+                    user_id, 
+                    "Выберите действие", 
+                    get_keyboard("personal_account", user_id)
+                )
             else:
-                send_message(user_id, "У вас отсутствует личный кабинет! Зарегистрируйте его!", get_keyboard("personal_account", user_id))
-        
+                send_message(
+                    user_id, 
+                    "У вас отсутствует личный кабинет! Зарегистрируйте его!", 
+                    get_keyboard("personal_account", user_id)
+                )
         elif message == "Зарегистрироваться":
             user_state[user_id] = {'state': 'waiting_for_name'}
-            send_message(user_id, "Прежде чем производить запись на кружок или мероприятие давайте зарегистрируемся! Ваши фамилия и имя(через пробел)?", get_keyboard("get_name", user_id))
-        
-        elif message == "Взять с профиля":
-            if user_id in user_state:
-                state = user_state[user_id]
-                if state['state'] == 'waiting_for_name':
-                    # В реальности нужно получить данные из профиля VK
-                    user_data[user_id] = {
-                        'first_name': 'Иван',  # Заглушка
-                        'last_name': 'Иванов',  # Заглушка
-                        'birthdate': None,
-                        'phone': None
-                    }
-                    user_state[user_id] = {'state': 'waiting_for_birthdate'}
-                    send_message(user_id, "Ваша дата рождения? (формат: ДД.ММ.ГГГГ)", get_keyboard("get_birthdate", user_id))
-                elif state['state'] == 'waiting_for_birthdate':
-                    # В реальности нужно получить данные из профиля VK
-                    user_data[user_id]['birthdate'] = '01.01.2000'  # Заглушка
-                    user_state[user_id] = {'state': 'waiting_for_phone'}
-                    send_message(user_id, "Ваш номер телефона?", get_keyboard("null"))
-        
-        elif message == "Информация":
-            if user_id in user_data:
-                user = user_data[user_id]
-                response = f"Ваши данные:\nИмя: {user['first_name']}\nФамилия: {user['last_name']}\nДата рождения: {user['birthdate']}\nТелефон: {user['phone']}"
-                send_message(user_id, response, get_keyboard("edit_info", user_id))
-        
-        elif message == "Мои записи":
-            if user_id in user_data:
-                if user_id in user_registrations:
-                    registrations = user_registrations[user_id]
-                    club_info = registrations.get('club', 'Запись отсутствует')
-                    event_info = registrations.get('event', 'Запись отсутствует')
-                    response = f"Ваши записи:\nКружок: {club_info}\nМероприятие: {event_info}"
-                else:
-                    response = "Ваши записи:\nКружок: Запись отсутствует\nМероприятие: Запись отсутствует"
-                send_message(user_id, response, get_keyboard("personal_account", user_id))
-        
-        elif message == "Кружки и Мероприятия":
-            send_message(user_id, "Выберите о чем хотите посмотреть информацию", get_keyboard("activities", user_id))
-        
-        elif message == "Кружок":
-            if user_id not in user_data:
-                send_message(user_id, "У вас отсутствует личный кабинет! Зарегистрируйте его!", get_keyboard("personal_account", user_id))
-            else:
-                send_message(user_id, "Выберите интересующее вас направление", get_keyboard("clubs", user_id))
-        
-        elif message in ["Программирование", "Дизайн"]:  # Заглушки для кружков
-            send_message(user_id, f"{message}: описание кружка, выберите дату", get_keyboard("club_dates", user_id))
-        
-        elif message in ["15.05.2023 (пн)", "17.05.2023 (ср)"]:  # Заглушки для дат
-            send_message(user_id, "Выберите время занятия", get_keyboard("club_times", user_id))
-        
-        elif message in ["15:00", "17:00"]:  # Заглушки для времени
-            # В реальности нужно сохранить запись в БД
-            if user_id not in user_registrations:
-                user_registrations[user_id] = {}
-            user_registrations[user_id]['club'] = f"Программирование, {message}"  # Заглушка
-            send_message(user_id, f"Проверьте вашу запись:\nКружок: Программирование\nВремя: {message}", get_keyboard("confirm_registration", user_id))
-        
-        elif message == "Подтверждаю":
-            send_message(user_id, "Вы успешно записаны на кружок!", get_keyboard("main"))
-        
-        elif message == "Не подтверждаю":
-            send_message(user_id, "Спасибо за ваше время!", get_keyboard("main"))
-        
-        elif message == "Мероприятие":
-            # В реальности проверять наличие мероприятий в БД
-            send_message(user_id, "Выберите интересующее вас мероприятие", get_keyboard("events", user_id))
-        
-        elif message in ["Концерт", "Мастер-класс"]:  # Заглушки для мероприятий
-            # В реальности брать данные из БД
-            send_message(user_id, f"{message}: описание мероприятия\nДата: 20.05.2023\nВремя: 18:00", get_keyboard("confirm_registration", user_id))
-        
-        elif message == "Записаться!":
-            # В реальности сохранять запись в БД
-            if user_id not in user_registrations:
-                user_registrations[user_id] = {}
-            user_registrations[user_id]['event'] = "Концерт, 20.05.2023, 18:00"  # Заглушка
-            send_message(user_id, "Спасибо за запись! Увидимся на мероприятии!", get_keyboard("main"))
-        
-        elif message == "Вопросы":
-            send_message(user_id, "Есть вопросы?", get_keyboard("questions", user_id))
-        
-        elif message == "Часто задаваемые вопросы":
-            send_message(user_id, "Возможно вам нужен ответ на один из этих вопросов", get_keyboard("faq", user_id))
-        
-        elif message in ["Как записаться?", "Где проходят занятия?"]:  # Заглушки для FAQ
-            send_message(user_id, f"Q: {message}\nA: Ответ на вопрос '{message}'", get_keyboard("faq", user_id))
-        
-        elif message == "Свой вопрос":
-            user_state[user_id] = {'state': 'waiting_for_question'}
-            send_message(user_id, "Введите свой вопрос", get_keyboard("null"))
-        
-        elif message == "Назад":
-            # Обработка кнопки "Назад" в зависимости от контекста
-            # В реальности нужно отслеживать предыдущее состояние пользователя
-            send_message(user_id, "Возвращаемся назад", get_keyboard("main"))
+            send_message(
+                user_id, 
+                "Прежде чем производить запись на кружок или мероприятие давайте зарегистрируемся! Ваши фамилия и имя(через пробел)?", 
+                get_keyboard("get_name", user_id)
+            )
 
-        return 'ok'
-
-    return 'unsupported'
+        return 'ok', 200
 
 def send_message(user_id, message, keyboard=None):
-    vk.messages.send(
-        user_id=user_id,
-        message=message,
-        random_id=random.getrandbits(64),
-        keyboard=keyboard.get_keyboard() if keyboard else None
-    )
+    try:
+        vk.messages.send(
+            user_id=user_id,
+            message=message,
+            random_id=random.getrandbits(64),
+            keyboard=keyboard.get_keyboard() if keyboard else None
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке сообщения: {e}")
 
-import subprocess
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    subprocess.call(['./update.sh'])
-    return 'OK', 200
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)

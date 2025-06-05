@@ -43,6 +43,7 @@ creds = service_account.Credentials.from_service_account_file(
 service = build('sheets', 'v4', credentials=creds)
 sheet = service.spreadsheets()
 
+
 class GoogleSheetManager:
     def __init__(self):
         self.sheet = sheet
@@ -90,8 +91,10 @@ class GoogleSheetManager:
             logger.error(f"Ошибка при обновлении в Google Sheets: {e}")
             return False
 
+
 # Инициализация Google Sheets
 gs_manager = GoogleSheetManager()
+
 
 def is_user_registered(user_id):
     try:
@@ -101,6 +104,7 @@ def is_user_registered(user_id):
     except Exception as e:
         logger.error(f"Ошибка при проверке регистрации пользователя: {e}")
         return False
+
 
 def register_user(user_id, first_name, last_name, birthdate, phone):
     try:
@@ -116,6 +120,7 @@ def register_user(user_id, first_name, last_name, birthdate, phone):
     except Exception as e:
         logger.error(f"Ошибка при регистрации пользователя: {e}")
         return False
+
 
 def get_keyboard(name, user_id=None):
     kb = VkKeyboard(one_time=False)
@@ -206,9 +211,11 @@ def get_keyboard(name, user_id=None):
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
     return kb
 
+
 def get_active_clubs():
     values = gs_manager.get_values('Clubs!B2:B')
     return [row[0] for row in values if row]
+
 
 def get_club_dates(club_id):
     values = gs_manager.get_values(f'Club_Schedule!A:E')
@@ -225,6 +232,7 @@ def get_club_dates(club_id):
             })
     return dates
 
+
 def get_schedule_times(schedule_id):
     values = gs_manager.get_values(f'Club_Schedule!A:E')
     for row in values:
@@ -232,17 +240,21 @@ def get_schedule_times(schedule_id):
             return [f"{row[3]}-{row[4]}"]
     return []
 
+
 def get_active_events():
     values = gs_manager.get_values('Events!B2:B')
     return [row[0] for row in values if row]
+
 
 def get_faq_categories():
     values = gs_manager.get_values('FAQ!A2:A')
     return list(set([row[0] for row in values if row]))
 
+
 def get_faq_by_category(category):
     values = gs_manager.get_values('FAQ!A:E')
     return [{'question': row[1], 'answer': row[2]} for row in values if row and row[0] == category]
+
 
 @app.route('/callback', methods=['POST', 'GET'])
 def callback():
@@ -258,9 +270,19 @@ def callback():
         user_id = data['object']['message']['from_id']
         logger.info(f"Получено сообщение от {user_id}: {message}")
 
+        # Основные команды вне состояния
+        if message == "Начать":
+            send_message(
+                user_id,
+                "Приветствуем тебя в молодежном клубе «Острова». Мы – часть большой семьи молодежного центра «Охта».",
+                get_keyboard("main")
+            )
+            return 'ok', 200
+
         # Обработка состояний пользователя
         if user_id in user_state:
             state = user_state[user_id]['state']
+
             if state == 'waiting_for_name':
                 names = message.split()
                 if len(names) >= 2:
@@ -272,16 +294,17 @@ def callback():
                     }
                     user_state[user_id] = {'state': 'waiting_for_birthdate'}
                     send_message(
-                        user_id, 
-                        "Ваша дата рождения? (формат: ДД.ММ.ГГГГ)", 
+                        user_id,
+                        "Ваша дата рождения? (формат: ДД.ММ.ГГГГ)",
                         get_keyboard("get_birthdate", user_id)
                     )
                 else:
                     send_message(
-                        user_id, 
+                        user_id,
                         "Пожалуйста, введите имя и фамилию через пробел (например: Иван Иванов)"
                     )
                 return 'ok', 200
+
             elif state == 'waiting_for_birthdate':
                 try:
                     datetime.strptime(message, '%d.%m.%Y')
@@ -291,6 +314,7 @@ def callback():
                 except ValueError:
                     send_message(user_id, "Пожалуйста, введите дату в формате ДД.ММ.ГГГГ")
                 return 'ok', 200
+
             elif state == 'waiting_for_phone':
                 user_data_cache[user_id]['phone'] = message
                 if register_user(
@@ -303,8 +327,8 @@ def callback():
                     send_message(user_id, "Спасибо за регистрацию!", get_keyboard("main"))
                 else:
                     send_message(
-                        user_id, 
-                        "Произошла ошибка при регистрации. Пожалуйста, попробуйте позже.", 
+                        user_id,
+                        "Произошла ошибка при регистрации. Пожалуйста, попробуйте позже.",
                         get_keyboard("main")
                     )
                 del user_state[user_id]
@@ -312,13 +336,7 @@ def callback():
                 return 'ok', 200
 
         # Основные команды
-        if message == "Начать":
-            send_message(
-                user_id, 
-                "Приветствуем тебя в молодежном клубе «Острова». Мы – часть большой семьи молодежного центра «Охта».", 
-                get_keyboard("main")
-            )
-        elif message == "На главную":
+        if message == "На главную":
             send_message(
                 user_id, 
                 "Вот меню для получения информации:", 
@@ -337,8 +355,46 @@ def callback():
                     "У вас отсутствует личный кабинет! Зарегистрируйте его!", 
                     get_keyboard("personal_account", user_id)
                 )
+        elif message == "Зарегистрироваться":
+            if is_user_registered(user_id):
+                send_message(user_id, "Вы уже зарегистрированы.", get_keyboard("main"))
+            else:
+                user_state[user_id] = {'state': 'waiting_for_name'}
+                send_message(
+                    user_id,
+                    "Введите ваше имя и фамилию через пробел или нажмите «Взять с профиля».",
+                    get_keyboard("get_name", user_id)
+                )
+
+        # Кнопка "Взять с профиля"
+        elif message == "Взять с профиля":
+            try:
+                info = vk.users.get(user_ids=user_id, fields="first_name,last_name,bdate")[0]
+                user_data_cache[user_id] = {
+                    'first_name': info.get('first_name'),
+                    'last_name': info.get('last_name'),
+                    'birthdate': info.get('bdate'),  # Может быть только год
+                    'phone': None
+                }
+
+                # Если есть полная дата — сразу переходим к телефону
+                if info.get('bdate') and '.' in info.get('bdate'):
+                    user_state[user_id] = {'state': 'waiting_for_phone'}
+                    send_message(user_id, "Ваш номер телефона?", get_keyboard("null"))
+                else:
+                    user_state[user_id] = {'state': 'waiting_for_birthdate'}
+                    send_message(
+                        user_id,
+                        "Дата рождения не найдена полностью. Введите её в формате ДД.ММ.ГГГГ",
+                        get_keyboard("get_birthdate", user_id)
+                    )
+
+            except Exception as e:
+                logger.error(f"Ошибка получения данных из ВК: {e}")
+                send_message(user_id, "Не удалось получить данные из профиля.")
 
         return 'ok', 200
+
 
 def send_message(user_id, message, keyboard=None):
     try:
@@ -350,6 +406,7 @@ def send_message(user_id, message, keyboard=None):
         )
     except Exception as e:
         logger.error(f"Ошибка при отправке сообщения: {e}")
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

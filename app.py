@@ -264,14 +264,6 @@ def get_faq_categories():
         logger.error(f"Ошибка при получении категорий FAQ: {e}")
         return []
 
-def get_faq_by_category(category):
-    try:
-        query = "SELECT question, answer FROM FAQ WHERE category = %s"
-        return db_manager.execute_query(query, (category,), fetch_all=True) or []
-    except Exception as e:
-        logger.error(f"Ошибка при получении FAQ по категории: {e}")
-        return []
-
 @app.route('/callback', methods=['POST', 'GET'])
 def callback():
     data = request.get_json()

@@ -4,14 +4,13 @@ import vk_api
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
 import random
 import os
-import pymysql
-from pymysql.cursors import DictCursor
-from dotenv import load_dotenv
-import logging
 from datetime import datetime
-
-# Загрузка переменных окружения
-load_dotenv()
+import logging
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from google.oauth2 import service_account
 
 # Настройка логирования
 logging.basicConfig(
@@ -22,14 +21,11 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Конфигурация из .env
+# Загрузка переменных окружения
 VK_TOKEN = os.getenv('VK_TOKEN')
 CONFIRMATION_TOKEN = os.getenv('CONFIRMATION_TOKEN')
-
-DB_HOST = os.getenv('DB_HOST')  # mysql-ostrova.alwaysdata.net
-DB_USER = os.getenv('DB_USER')  # ostrova
-DB_PASSWORD = os.getenv('DB_PASSWORD')
-DB_NAME = os.getenv('DB_NAME')  # ostrova_base
+GS_CREDENTIALS_FILE = os.getenv('GS_CREDENTIALS_FILE')
+GS_SPREADSHEET_ID = os.getenv('GS_SPREADSHEET_ID')
 
 # Инициализация VK API
 vk_session = vk_api.VkApi(token=VK_TOKEN)
@@ -39,69 +35,84 @@ vk = vk_session.get_api()
 user_state = {}
 user_data_cache = {}
 
-class DatabaseManager:
+# Подключение к Google Sheets
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets'] 
+creds = service_account.Credentials.from_service_account_file(
+    GS_CREDENTIALS_FILE, scopes=SCOPES
+)
+service = build('sheets', 'v4', credentials=creds)
+sheet = service.spreadsheets()
+
+class GoogleSheetManager:
     def __init__(self):
-        self.connection = None
-        self.connect()
+        self.sheet = sheet
 
-    def connect(self, retries=3, delay=5):
-        for attempt in range(retries):
-            try:
-                self.connection = pymysql.connect(
-                    host=DB_HOST,
-                    user=DB_USER,
-                    password=DB_PASSWORD,
-                    database=DB_NAME,
-                    cursorclass=DictCursor
-                )
-                logger.info("Успешное подключение к базе данных")
-                return True
-            except Exception as e:
-                logger.error(f"Ошибка подключения к базе данных (попытка {attempt + 1}): {e}")
-                if attempt < retries - 1:
-                    time.sleep(delay)
-        return False
-
-    def execute_query(self, query, params=None, fetch_one=False, fetch_all=False, commit=False):
+    def get_values(self, range_name):
         try:
-            with self.connection.cursor() as cursor:
-                cursor.execute(query, params or ())
-                if commit:
-                    self.connection.commit()
-                if fetch_one:
-                    return cursor.fetchone()
-                if fetch_all:
-                    return cursor.fetchall()
-                return None
-        except Exception as e:
-            logger.error(f"Ошибка выполнения запроса: {e}")
-            self.connection.rollback()
-            raise
+            result = self.sheet.values().get(
+                spreadsheetId=GS_SPREADSHEET_ID,
+                range=range_name
+            ).execute()
+            return result.get('values', [])
+        except HttpError as e:
+            logger.error(f"Ошибка при чтении из Google Sheets: {e}")
+            return []
 
-    def close(self):
-        if self.connection:
-            self.connection.close()
+    def append_value(self, range_name, values):
+        try:
+            body = {
+                'values': [values]
+            }
+            self.sheet.values().append(
+                spreadsheetId=GS_SPREADSHEET_ID,
+                range=range_name,
+                valueInputOption='RAW',
+                body=body
+            ).execute()
+            return True
+        except HttpError as e:
+            logger.error(f"Ошибка при записи в Google Sheets: {e}")
+            return False
 
-# Инициализация менеджера БД
-db_manager = DatabaseManager()
+    def update_value(self, range_name, values):
+        try:
+            body = {
+                'values': [values]
+            }
+            self.sheet.values().update(
+                spreadsheetId=GS_SPREADSHEET_ID,
+                range=range_name,
+                valueInputOption='RAW',
+                body=body
+            ).execute()
+            return True
+        except HttpError as e:
+            logger.error(f"Ошибка при обновлении в Google Sheets: {e}")
+            return False
+
+# Инициализация Google Sheets
+gs_manager = GoogleSheetManager()
 
 def is_user_registered(user_id):
     try:
-        query = "SELECT 1 FROM Users WHERE user_id = %s"
-        result = db_manager.execute_query(query, (user_id,), fetch_one=True)
-        return result is not None
+        values = gs_manager.get_values('Users!A2:A')
+        user_ids = [row[0] for row in values if row]
+        return str(user_id) in user_ids
     except Exception as e:
         logger.error(f"Ошибка при проверке регистрации пользователя: {e}")
         return False
 
 def register_user(user_id, first_name, last_name, birthdate, phone):
     try:
-        query = """
-        INSERT INTO Users (user_id, first_name, last_name, birthdate, phone, reg_date)
-        VALUES (%s, %s, %s, %s, %s, CURDATE())
-        """
-        db_manager.execute_query(query, (user_id, first_name, last_name, birthdate, phone), commit=True)
-        return True
+        values = [
+            user_id,
+            first_name,
+            last_name,
+            birthdate,
+            phone,
+            datetime.now().strftime('%d.%m.%Y')
+        ]
+        return gs_manager.append_value('Users!A:F', values)
     except Exception as e:
         logger.error(f"Ошибка при регистрации пользователя: {e}")
         return False
@@ -154,7 +165,7 @@ def get_keyboard(name, user_id=None):
         for i, club in enumerate(clubs):
             if i > 0 and i % 2 == 0:
                 kb.add_line()
-            kb.add_button(club['name'])
+            kb.add_button(club)
         kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
     elif name == "club_dates":
@@ -178,7 +189,7 @@ def get_keyboard(name, user_id=None):
     elif name == "events":
         events = get_active_events()
         for event in events:
-            kb.add_button(event['name'])
+            kb.add_button(event)
             kb.add_line()
         kb.add_button('Назад', color=VkKeyboardColor.PRIMARY)
     elif name == "questions":
@@ -196,73 +207,42 @@ def get_keyboard(name, user_id=None):
     return kb
 
 def get_active_clubs():
-    try:
-        query = "SELECT * FROM Clubs WHERE active = TRUE"
-        return db_manager.execute_query(query, fetch_all=True) or []
-    except Exception as e:
-        logger.error(f"Ошибка при получении активных кружков: {e}")
-        return []
+    values = gs_manager.get_values('Clubs!B2:B')
+    return [row[0] for row in values if row]
 
 def get_club_dates(club_id):
-    try:
-        query = """
-        SELECT 
-            schedule_id, 
-            date, 
-            DAYNAME(date) as day_of_week, 
-            start_time, 
-            end_time 
-        FROM Club_Schedule 
-        WHERE club_id = %s AND date >= CURDATE()
-        ORDER BY date
-        """
-        schedules = db_manager.execute_query(query, (club_id,), fetch_all=True) or []
-        dates = []
-        for s in schedules:
-            date_str = s['date'].strftime('%d.%m.%Y')
+    values = gs_manager.get_values(f'Club_Schedule!A:E')
+    dates = []
+    for row in values:
+        if row[1] == club_id:
+            date_str = row[2]
+            day_of_week = row[3]
+            schedule_id = row[0]
             dates.append({
                 'date': date_str,
-                'display': f"{date_str} ({s['day_of_week']})",
-                'schedule_id': s['schedule_id']
+                'display': f"{date_str} ({day_of_week})",
+                'schedule_id': schedule_id
             })
-        return dates
-    except Exception as e:
-        logger.error(f"Ошибка при получении дат кружка: {e}")
-        return []
+    return dates
 
 def get_schedule_times(schedule_id):
-    try:
-        query = """
-        SELECT 
-            TIME_FORMAT(start_time, '%H:%i') as start_time,
-            TIME_FORMAT(end_time, '%H:%i') as end_time
-        FROM Club_Schedule
-        WHERE schedule_id = %s
-        """
-        schedule = db_manager.execute_query(query, (schedule_id,), fetch_one=True)
-        if schedule:
-            return [f"{schedule['start_time']}-{schedule['end_time']}"]
-        return []
-    except Exception as e:
-        logger.error(f"Ошибка при получении времени занятий: {e}")
-        return []
+    values = gs_manager.get_values(f'Club_Schedule!A:E')
+    for row in values:
+        if row[0] == schedule_id:
+            return [f"{row[3]}-{row[4]}"]
+    return []
 
 def get_active_events():
-    try:
-        query = "SELECT * FROM Events WHERE active = TRUE AND date >= CURDATE()"
-        return db_manager.execute_query(query, fetch_all=True) or []
-    except Exception as e:
-        logger.error(f"Ошибка при получении активных мероприятий: {e}")
-        return []
+    values = gs_manager.get_values('Events!B2:B')
+    return [row[0] for row in values if row]
 
 def get_faq_categories():
-    try:
-        query = "SELECT DISTINCT category FROM FAQ"
-        faqs = db_manager.execute_query(query, fetch_all=True) or []
-        return [faq['category'] for faq in faqs if faq.get('category')]
-    except Exception as e:
-        logger.error(f"Ошибка при получении категорий FAQ: {e}")
-        return []
+    values = gs_manager.get_values('FAQ!A2:A')
+    return list(set([row[0] for row in values if row]))
+
+def get_faq_by_category(category):
+    values = gs_manager.get_values('FAQ!A:E')
+    return [{'question': row[1], 'answer': row[2]} for row in values if row and row[0] == category]
 
 @app.route('/callback', methods=['POST', 'GET'])
 def callback():
@@ -316,7 +296,7 @@ def callback():
                 if register_user(
                     user_id,
                     user_data_cache[user_id]['first_name'],
-                    user_data_cache[user_id]['first_name'],
+                    user_data_cache[user_id]['last_name'],
                     user_data_cache[user_id]['birthdate'],
                     user_data_cache[user_id]['phone']
                 ):

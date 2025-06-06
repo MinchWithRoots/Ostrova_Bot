@@ -1,1 +1,3 @@
-
+flask
+vk_api
+sqlite3
